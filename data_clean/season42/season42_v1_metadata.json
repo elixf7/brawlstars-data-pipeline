@@ -1,0 +1,129 @@
+{
+  "season_label": "season42_v1",
+  "start_time": "20251010T175232.000Z",
+  "end_time": "20251030T185617.000Z",
+  "num_matches": 1006895,
+  "num_unique_brawlers": 95,
+  "modes": [
+    "bounty",
+    "brawlBall",
+    "gemGrab",
+    "heist",
+    "hotZone",
+    "knockout"
+  ],
+  "maps": [
+    "Belle's Rock",
+    "Bridge Too Far",
+    "Center Stage",
+    "Deathcap Trap",
+    "Double Swoosh",
+    "Dry Season",
+    "Dueling Beetles",
+    "Flaring Phoenix",
+    "Gem Fort",
+    "Grass Knot",
+    "Hard Rock Mine",
+    "Hideout",
+    "Hot Potato",
+    "Infinite Doom",
+    "Kaboom Canyon",
+    "Layer Cake",
+    "New Horizons",
+    "Open Business",
+    "Out in the Open",
+    "Parallel Plays",
+    "Pinball Dreams",
+    "Ring of Fire",
+    "Safe Zone",
+    "Shooting Star",
+    "Sneaky Fields",
+    "Spiraling Out",
+    "Triple Dribble",
+    "Undermine"
+  ],
+  "brawler_usage_top": [
+    [
+      "CORDELIUS",
+      198156
+    ],
+    [
+      "BROCK",
+      194197
+    ],
+    [
+      "BYRON",
+      165009
+    ],
+    [
+      "BO",
+      155388
+    ],
+    [
+      "CROW",
+      153046
+    ],
+    [
+      "CARL",
+      126432
+    ],
+    [
+      "RICO",
+      125921
+    ],
+    [
+      "NANI",
+      123108
+    ],
+    [
+      "GRIFF",
+      119229
+    ],
+    [
+      "EDGAR",
+      118728
+    ],
+    [
+      "MANDY",
+      117670
+    ],
+    [
+      "GUS",
+      115249
+    ],
+    [
+      "DRACO",
+      114497
+    ],
+    [
+      "PIPER",
+      112925
+    ],
+    [
+      "LILY",
+      112528
+    ],
+    [
+      "DYNAMIKE",
+      111424
+    ],
+    [
+      "SQUEAK",
+      109863
+    ],
+    [
+      "TARA",
+      108091
+    ],
+    [
+      "MINA",
+      104482
+    ],
+    [
+      "BUZZ",
+      103648
+    ]
+  ],
+  "data_bytes": 270733312,
+  "created_utc": "2025-10-30T19:08:04.843396+00:00"
+}

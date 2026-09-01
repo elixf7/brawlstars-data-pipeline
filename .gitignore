@@ -1,0 +1,51 @@
+# ---------------------------------------------------------------
+# Secrets — never commit credentials of any kind
+# ---------------------------------------------------------------
+.env
+.env.*
+!.env.example
+local_secrets.py
+**/local_secrets.py
+*.pem
+*.key
+
+# ---------------------------------------------------------------
+# Data artifacts
+# Season databases are 250MB-900MB and live in the published
+# dataset, not in git. Small committed test fixtures are exempt.
+# ---------------------------------------------------------------
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.parquet
+!fixtures/**
+
+data_raw/
+
+# ---------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ---------------------------------------------------------------
+# Notebooks
+# ---------------------------------------------------------------
+.ipynb_checkpoints/
+
+# ---------------------------------------------------------------
+# Editor / OS
+# ---------------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/

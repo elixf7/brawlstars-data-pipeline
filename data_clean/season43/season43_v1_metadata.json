@@ -1,0 +1,225 @@
+{
+  "season_label": "season43_v1",
+  "start_time": "20251112T001036.000Z",
+  "end_time": "20251119T090904.000Z",
+  "num_matches": 606224,
+  "num_unique_brawlers": 96,
+  "unique_brawlers": [
+    "8-BIT",
+    "ALLI",
+    "AMBER",
+    "ANGELO",
+    "ASH",
+    "BARLEY",
+    "BEA",
+    "BELLE",
+    "BERRY",
+    "BIBI",
+    "BO",
+    "BONNIE",
+    "BROCK",
+    "BULL",
+    "BUSTER",
+    "BUZZ",
+    "BYRON",
+    "CARL",
+    "CHARLIE",
+    "CHESTER",
+    "CHUCK",
+    "CLANCY",
+    "COLETTE",
+    "COLT",
+    "CORDELIUS",
+    "CROW",
+    "DARRYL",
+    "DOUG",
+    "DRACO",
+    "DYNAMIKE",
+    "EDGAR",
+    "EL PRIMO",
+    "EMZ",
+    "EVE",
+    "FANG",
+    "FINX",
+    "FRANK",
+    "GALE",
+    "GENE",
+    "GRAY",
+    "GRIFF",
+    "GROM",
+    "GUS",
+    "HANK",
+    "JACKY",
+    "JAE-YONG",
+    "JANET",
+    "JESSIE",
+    "JUJU",
+    "KAZE",
+    "KENJI",
+    "KIT",
+    "LARRY & LAWRIE",
+    "LEON",
+    "LILY",
+    "LOLA",
+    "LOU",
+    "LUMI",
+    "MAISIE",
+    "MANDY",
+    "MAX",
+    "MEEPLE",
+    "MEG",
+    "MELODIE",
+    "MICO",
+    "MINA",
+    "MOE",
+    "MORTIS",
+    "MR. P",
+    "NANI",
+    "NITA",
+    "OLLIE",
+    "OTIS",
+    "PAM",
+    "PEARL",
+    "PENNY",
+    "PIPER",
+    "POCO",
+    "R-T",
+    "RICO",
+    "ROSA",
+    "RUFFS",
+    "SAM",
+    "SANDY",
+    "SHADE",
+    "SHELLY",
+    "SPIKE",
+    "SPROUT",
+    "SQUEAK",
+    "STU",
+    "SURGE",
+    "TARA",
+    "TICK",
+    "TRUNK",
+    "WILLOW",
+    "ZIGGY"
+  ],
+  "modes": [
+    "bounty",
+    "brawlBall",
+    "gemGrab",
+    "heist",
+    "hotZone",
+    "knockout"
+  ],
+  "maps": [
+    "Belle's Rock",
+    "Bridge Too Far",
+    "Center Stage",
+    "Deathcap Trap",
+    "Double Swoosh",
+    "Dry Season",
+    "Dueling Beetles",
+    "Flaring Phoenix",
+    "Gem Fort",
+    "Grass Knot",
+    "Hard Rock Mine",
+    "Hideout",
+    "Hot Potato",
+    "Kaboom Canyon",
+    "Layer Cake",
+    "New Horizons",
+    "Open Business",
+    "Out in the Open",
+    "Parallel Plays",
+    "Pinball Dreams",
+    "Ring of Fire",
+    "Safe Zone",
+    "Shooting Star",
+    "Sneaky Fields",
+    "Spiraling Out",
+    "Triple Dribble"
+  ],
+  "brawler_usage_top": [
+    [
+      "CORDELIUS",
+      120392
+    ],
+    [
+      "BROCK",
+      120127
+    ],
+    [
+      "CARL",
+      101977
+    ],
+    [
+      "BYRON",
+      101275
+    ],
+    [
+      "CROW",
+      98945
+    ],
+    [
+      "BO",
+      92728
+    ],
+    [
+      "GUS",
+      81718
+    ],
+    [
+      "NANI",
+      81246
+    ],
+    [
+      "LILY",
+      73678
+    ],
+    [
+      "SQUEAK",
+      71256
+    ],
+    [
+      "PIPER",
+      69405
+    ],
+    [
+      "GRIFF",
+      68028
+    ],
+    [
+      "MANDY",
+      67478
+    ],
+    [
+      "OTIS",
+      65290
+    ],
+    [
+      "TARA",
+      64359
+    ],
+    [
+      "RICO",
+      63311
+    ],
+    [
+      "MEEPLE",
+      59298
+    ],
+    [
+      "TICK",
+      53981
+    ],
+    [
+      "GRAY",
+      52238
+    ],
+    [
+      "DYNAMIKE",
+      52228
+    ]
+  ],
+  "data_bytes": 178040832,
+  "created_utc": "2025-11-25T21:43:46.616758+00:00"
+}

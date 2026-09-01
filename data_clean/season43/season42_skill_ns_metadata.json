@@ -1,0 +1,48 @@
+{
+  "feature_version": "skill_ns_v1",
+  "season": "season42",
+  "bin_width_days": 3,
+  "min_bin_count": 100000,
+  "epsilon": 0.001,
+  "mapping": "logit",
+  "fallback_strategy": "none",
+  "bins": [
+    {
+      "feature_version": "skill_ns_v1",
+      "season": "season42",
+      "bin_start_utc": "2025-11-11T00:00:00+00:00",
+      "bin_end_utc": "2025-11-14T00:00:00+00:00",
+      "n_samples": 2545,
+      "coverage_ok": false,
+      "epsilon": 0.001,
+      "bin_width_days": 3,
+      "fallback_used": false,
+      "created_utc": "2026-03-22T17:35:58.269413+00:00"
+    },
+    {
+      "feature_version": "skill_ns_v1",
+      "season": "season42",
+      "bin_start_utc": "2025-11-14T00:00:00+00:00",
+      "bin_end_utc": "2025-11-17T00:00:00+00:00",
+      "n_samples": 53700,
+      "coverage_ok": false,
+      "epsilon": 0.001,
+      "bin_width_days": 3,
+      "fallback_used": false,
+      "created_utc": "2026-03-22T17:35:58.269413+00:00"
+    },
+    {
+      "feature_version": "skill_ns_v1",
+      "season": "season42",
+      "bin_start_utc": "2025-11-17T00:00:00+00:00",
+      "bin_end_utc": "2025-11-20T00:00:00+00:00",
+      "n_samples": 549979,
+      "coverage_ok": true,
+      "epsilon": 0.001,
+      "bin_width_days": 3,
+      "fallback_used": false,
+      "created_utc": "2026-03-22T17:35:58.269413+00:00"
+    }
+  ],
+  "created_utc": "2026-03-22T17:35:58.272565+00:00"
+}
