@@ -25,6 +25,8 @@ from datetime import UTC, datetime
 
 import requests
 
+from bsetl.logconfig import get_logger
+
 PORTAL = "https://developer.brawlstars.com/api"
 SCOPE = "brawlstars"
 # The portal caps an account at 10 keys.
@@ -32,6 +34,8 @@ MAX_KEYS = 10
 # Keys carrying this name prefix are considered ours and disposable.
 MANAGED_PREFIX = "bsetl-auto"
 TIMEOUT = 30
+
+logger = get_logger(__name__)
 
 
 class PortalError(RuntimeError):
@@ -174,14 +178,16 @@ def ephemeral_key(
     portal = portal or DeveloperPortal()
 
     ip = portal.login(email, password)
+    logger.info("Portal sees this host as %s", ip)
 
     existing = portal.list_keys()
     orphans = [k for k in existing if str(k.get("name", "")).startswith(name_prefix)]
     for orphan in orphans:
+        logger.info("Reclaiming orphaned key %s from an earlier run", orphan.get("id"))
         try:
             portal.revoke_key(orphan["id"])
         except PortalError as e:
-            print(f"Could not revoke orphaned key {orphan.get('id')}: {e}")
+            logger.warning("Could not revoke orphaned key %s: %s", orphan.get("id"), e)
 
     if len(existing) - len(orphans) >= MAX_KEYS:
         raise KeyQuotaExhausted(
@@ -207,4 +213,8 @@ def ephemeral_key(
         except PortalError as e:
             # Worth shouting about: an un-revoked key is a live credential and
             # occupies one of ten slots.
-            print(f"WARNING: failed to revoke key {provisioned.key_id}: {e}")
+            logger.error(
+                "Failed to revoke key %s. It remains live and occupies one of %d slots; "
+                "run `bsetl-key sweep` to reclaim it. (%s)",
+                provisioned.key_id, MAX_KEYS, e,
+            )

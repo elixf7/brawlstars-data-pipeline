@@ -16,6 +16,7 @@ from collections import deque
 
 from bsetl.ingest.budget import CrawlStats, Outcome, RunBudget, StopReason
 from bsetl.ingest.ratelimit import AsyncRateLimiter
+from bsetl.logconfig import get_logger, progress_enabled
 from bsetl.state.frontier import load_frontier, save_frontier
 from bsetl.state.runs import finish_run, start_run
 from bsetl.transform.schema import (
@@ -33,17 +34,29 @@ from bsetl.transform.schema import (
 # HELPER FUNCTIONS
 ########################
 
-class _BudgetSkip:
-    """Returned instead of a response when the budget is spent.
+class _Sentinel:
+    """A distinguishable non-result from a fetch.
 
-    Distinct from None, which means the request happened and yielded nothing.
-    A skipped tag has to go back on the frontier; an empty one must not.
+    None means the request happened and the player legitimately has nothing.
+    These two mean something else happened, and the tag should go back on the
+    frontier rather than be treated as answered.
     """
 
-    __slots__ = ()
+    __slots__ = ("_name",)
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def __repr__(self) -> str:
+        return self._name
 
 
-BUDGET_SKIP = _BudgetSkip()
+#: The budget was spent, so no request was made.
+BUDGET_SKIP = _Sentinel("BUDGET_SKIP")
+#: The request was made and every retry failed.
+FETCH_FAILED = _Sentinel("FETCH_FAILED")
+
+logger = get_logger(__name__)
 
 
 def is_string_date_after(reference_dt, date_string):
@@ -343,9 +356,9 @@ def insert_rows_matches_in_chunks(db_path: str, rows: list[tuple[Any, ...]], chu
         parent_dir = os.path.dirname(os.path.abspath(db_path))
         if parent_dir:
             os.makedirs(parent_dir, exist_ok=True)
-    except Exception:
-        # Fall through; sqlite will raise a clearer error if path is invalid
-        pass
+    except OSError as e:
+        # sqlite will raise a clearer error if the path is genuinely unusable
+        logger.debug("Could not pre-create parent directory for %s: %s", db_path, e)
 
     conn = sqlite3.connect(db_path)
     try:
@@ -475,14 +488,15 @@ async def fetch_json_async(
                         if not_found:
                             # A tag with no accessible profile. Expected and common.
                             return None
-                        print(f"HTTP {response.status}: {text}")
+                        logger.warning("HTTP %s from %s: %s", response.status, url, text[:200])
                         await asyncio.sleep(1)
             except Exception as e:
                 if stats is not None:
                     stats.record_request(Outcome.ERROR)
-                print(f"Exception fetching {url}: {e}")
+                logger.warning("Error fetching %s: %s", url, e)
                 await asyncio.sleep(1)
-    return None
+    # Every retry failed. Distinct from None so the caller can requeue.
+    return FETCH_FAILED
 
 async def fetch_battle_log_async(player_tag, api_key, session, semaphore, rate_limiter: AsyncRateLimiter | None = None, stats: CrawlStats | None = None):
     headers = {'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'Authorization': f'Bearer {api_key}'}
@@ -496,23 +510,6 @@ async def fetch_player_info_async(player_tag, api_key, session, semaphore, rate_
     url = f'https://api.brawlstars.com/v1/players/{encoded_tag}'
     return await fetch_json_async(url, headers, session, semaphore, rate_limiter=rate_limiter, stats=stats)
 
-def getUpdatedIP(api_key):
-    import requests
-    headers = {
-        'Accept': 'application/json',
-        'Authorization': f'Bearer {api_key}',
-    }
-    encoded_tag = urllib.parse.quote('#9UUU9QVU')
-    url = f'https://api.brawlstars.com/v1/players/{encoded_tag}'
-
-    # Make the GET request using the session
-    response = requests.get(url, headers=headers)
-
-    # Check the response status
-    if response.status_code == 200:
-        print("IP Adress is Valid")
-    else:
-        print(response.text)
 
 ########################
 # MAIN PROCESS FUNCTION WITH SINGLE PROGRESS BAR
@@ -604,6 +601,11 @@ async def process_tags_and_write_async(
             frontier_before=len(pending),
         )
 
+    logger.info(
+        "Starting crawl: %d seed tag(s), %d resumed from frontier, depth %d",
+        len(player_tags), len(pending), max_depth,
+    )
+
     logs_dict: dict = {}
     discovered_tags_set: set = set()
     visited_tags: set = set()
@@ -670,7 +672,7 @@ async def process_tags_and_write_async(
                 ])
                 filtered = []
                 for t, info_json in zip(initial_tags, infos, strict=True):
-                    if not info_json or info_json is BUDGET_SKIP:
+                    if not info_json or isinstance(info_json, _Sentinel):
                         continue
                     player_info_cache[t] = info_json
                     try:
@@ -692,7 +694,8 @@ async def process_tags_and_write_async(
                     queue.append((t, 0))
                     enqueued.add(t)
 
-            pbar_bfs = tqdm(desc="BFS: fetching logs", total=0, dynamic_ncols=True)
+            pbar_bfs = tqdm(desc="BFS: fetching logs", total=0, dynamic_ncols=True,
+                            disable=not progress_enabled())
 
             while queue:
                 stop_reason = stats.should_stop()
@@ -717,8 +720,10 @@ async def process_tags_and_write_async(
                 ])
 
                 for (tag, depth), battle_log in zip(tasks, results, strict=True):
-                    if battle_log is BUDGET_SKIP:
-                        # No request was made. Put it back rather than lose it.
+                    if battle_log is BUDGET_SKIP or battle_log is FETCH_FAILED:
+                        # BUDGET_SKIP: never asked. FETCH_FAILED: asked and every
+                        # retry failed. Either way the tag is unanswered, so it
+                        # returns to the frontier instead of counting as empty.
                         visited_tags.discard(tag)
                         requeue.append((tag, depth))
                         continue
@@ -747,13 +752,14 @@ async def process_tags_and_write_async(
 
             if fetch_player_data:
                 to_fetch = [t for t in discovered_tags_set if t not in player_info_cache]
-                pbar_info = tqdm(total=len(to_fetch), desc="Fetching player info", dynamic_ncols=True)
+                pbar_info = tqdm(total=len(to_fetch), desc="Fetching player info",
+                                 dynamic_ncols=True, disable=not progress_enabled())
                 results_info = await asyncio.gather(*[
                     fetch_player_info_async(t, api_key, session, semaphore, rate_limiter, stats)
                     for t in to_fetch
                 ])
                 for t, info_json in zip(to_fetch, results_info, strict=True):
-                    if info_json and info_json is not BUDGET_SKIP:
+                    if info_json and not isinstance(info_json, _Sentinel):
                         player_info_cache[t] = info_json
                 pbar_info.update(len(to_fetch))
                 pbar_info.close()
@@ -781,14 +787,38 @@ async def process_tags_and_write_async(
 
     except BaseException:
         stop_reason = StopReason.FAILED
+        # Rows are normally written once at the end, so a crash after thousands
+        # of requests would otherwise discard every one of them. Salvage first,
+        # then re-raise: the original failure is what matters.
+        try:
+            if logs_dict and clean_db_path:
+                salvage = _build_clean_rows_from_logs(
+                    logs_dict, latest_runtime, {}, False, elo_game_min, elo_game_max, stats
+                )
+                if salvage:
+                    n = insert_rows_matches_in_chunks(clean_db_path, salvage, 10000)
+                    stats.record_rows(n)
+                    logger.warning("Run failed; salvaged %d rows already fetched", n)
+        except Exception as e:
+            logger.error("Could not salvage rows after failure: %s", e)
         raise
     finally:
         remaining = requeue + list(queue)
+        logger.info(
+            "Crawl finished (%s): %d requests, %d rows inserted, %d tag(s) left on the frontier",
+            stop_reason or "unknown", stats.requests_made, stats.rows_inserted, len(remaining),
+        )
+        if stats.parse_failures:
+            logger.warning("%d battle(s) could not be parsed and were skipped",
+                           stats.parse_failures)
+        errored = stats.outcomes.get("error", 0)
+        if errored:
+            logger.warning("%d request(s) failed; their tags return to the frontier", errored)
         if clean_db_path:
             try:
                 save_frontier(clean_db_path, remaining)
             except Exception as e:
-                print(f"Could not save frontier: {e}")
+                logger.error("Could not save frontier: %s", e)
             if run_id is not None:
                 try:
                     finish_run(
@@ -799,6 +829,6 @@ async def process_tags_and_write_async(
                         frontier_after=len(remaining),
                     )
                 except Exception as e:
-                    print(f"Could not record run: {e}")
+                    logger.error("Could not record run: %s", e)
 
     return stats

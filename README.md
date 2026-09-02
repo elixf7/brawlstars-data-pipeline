@@ -72,6 +72,13 @@ next run picks up where this one left off rather than restarting from seeds.
 uv run bsetl-ingest --clean-db-path data/seasons/season50/v1.db --max-requests 20000 --max-seconds 2400 --min-rows-per-1k-requests 40 --flush-every-n-batches 5 --elo-game-min 12 --elo-game-max 23 --fetched-tags-ttl-hours 24
 ```
 
+All commands take `-v` for debug detail and `-q` for warnings only. Logs go to
+stderr and the run summary is JSON on stdout, so the two can be separated:
+
+```bash
+uv run bsetl-ingest ... -q > summary.json
+```
+
 Every run records itself in a `pipeline_runs` table — configuration, stop reason,
 requests, rows inserted, HTTP outcomes, and frontier size before and after:
 

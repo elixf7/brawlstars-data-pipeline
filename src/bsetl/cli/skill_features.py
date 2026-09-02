@@ -7,6 +7,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from bsetl.cli import add_logging_flags, configure_logging
 from bsetl.transform.skill_config import (
     SKILL_COLUMN,
     SKILL_COVERAGE_COLUMN,
@@ -216,7 +217,9 @@ def main() -> None:
     p.add_argument("--read-batch-size", type=int, default=100_000)
     p.add_argument("--update-batch-size", type=int, default=20_000)
 
+    add_logging_flags(p)
     args = p.parse_args()
+    configure_logging(args)
     clean_db_path = args.clean_db_path
     season = args.season or derive_season_label(clean_db_path)
     bin_width_days: int = max(1, args.bin_width_days)

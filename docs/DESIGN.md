@@ -215,6 +215,28 @@ The key is never rendered. `ProvisionedKey.__repr__` redacts it, because the
 realistic leak is not someone printing it deliberately — it is a traceback, a
 debug log, or a CI transcript that happens to include an object.
 
+## A run has to account for itself
+
+Nobody watches a scheduled run, so its log is the only account of what happened.
+Library code logs and never prints, at levels a reader can filter: routine
+progress at INFO, things worth a human's attention at WARNING.
+
+Logs go to stderr, which keeps stdout clean for the JSON run summary that
+`bsetl-ingest` prints on exit — so a caller can parse the result without
+stripping log lines out of it. Progress bars are drawn only when stderr is a
+terminal; tqdm redraws with carriage returns, which a CI log renders as
+thousands of unreadable lines.
+
+Failures that used to be invisible now say so. Unparseable battles are counted
+and reported. Rows whose `battle_time` cannot be parsed are counted before the
+ECDF is built, because an upstream format change would otherwise quietly thin
+every bin and bias the percentiles without failing anything.
+
+One durability point: rows are normally written once at the end of a run, so a
+crash after thousands of requests would discard all of them. The failure path
+now salvages what was fetched before re-raising, so an interrupted run loses
+time but not data.
+
 ## Known limitations
 
 - **Draft order is unrecoverable.** The API returns the six final brawlers with
@@ -224,6 +246,6 @@ debug log, or a CI transcript that happens to include an object.
 - **Yield collapse is global, not per-neighborhood.** The crawl stops when
   overall yield falls, but cannot currently redirect toward a more productive
   region of the graph instead.
-- **Retry exhaustion still reads as an empty response.** Outcomes are now
-  counted, so a run reports how many requests errored — but a tag whose three
-  attempts all failed is not individually re-queued.
+- **Player enrichment is still all-or-nothing.** With `fetch_player_data`
+  enabled, profile fetches happen in one pass after the crawl, outside the
+  incremental flush, so that path holds more in memory than the default one.

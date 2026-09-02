@@ -6,6 +6,8 @@ import subprocess
 import sys
 import time
 
+from bsetl.cli import add_logging_flags, configure_logging
+
 
 def load_tags(path: str) -> list[str]:
     tags: list[str] = []
@@ -54,7 +56,9 @@ def main() -> None:
     p.add_argument("--max-seconds", type=float, default=None)
     p.add_argument("--min-rows-per-1k-requests", type=float, default=None)
 
+    add_logging_flags(p)
     args = p.parse_args()
+    configure_logging(args)
 
     tags = load_tags(args.tags_file)
     if not tags:

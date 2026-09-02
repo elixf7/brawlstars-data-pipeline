@@ -8,6 +8,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from bsetl.cli import add_logging_flags, configure_logging
 from bsetl.config import get_api_key
 from bsetl.ingest.budget import RunBudget
 from bsetl.ingest.crawler import process_tags_and_write_async
@@ -92,7 +93,9 @@ def main() -> None:
                         "Reads BS_DEV_EMAIL and BS_DEV_PASSWORD instead of BS_API_KEY. "
                         "This is how scheduled runs authenticate.")
 
+    add_logging_flags(p)
     args = p.parse_args()
+    configure_logging(args)
     tags = parse_tags(args.tags, args.tags_file)
     resuming = not args.no_resume and Path(args.clean_db_path).exists()
     if not tags and not resuming:

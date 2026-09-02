@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 
+from bsetl.cli import add_logging_flags, configure_logging
 from bsetl.ingest.keyprovision import (
     DeveloperPortal,
     PortalError,
@@ -76,7 +77,9 @@ def main() -> None:
     sweep.add_argument("--prefix", default="bsetl-auto")
     sweep.set_defaults(func=cmd_sweep)
 
+    add_logging_flags(p)
     args = p.parse_args()
+    configure_logging(args)
     try:
         raise SystemExit(args.func(args))
     except PortalError as e:

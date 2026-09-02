@@ -8,6 +8,8 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from bsetl.logconfig import get_logger
+
 from .skill_config import (
     BIN_WIDTH_DAYS,
     MIN_BIN_COUNT,
@@ -69,6 +71,8 @@ def base_bin_start(dt: datetime, base_width_days: int = BIN_WIDTH_DAYS) -> datet
     k = (delta_days // base_width_days) * base_width_days
     return epoch + timedelta(days=k)
 
+logger = get_logger(__name__)
+
 
 # -----------------------------------------------------------------------------
 # Fixed-bin value collection (no merging)
@@ -96,17 +100,26 @@ def collect_avg_elo_by_bin(
     if not db_path.exists():
         raise RuntimeError(f"Clean DB not found: {db_path}")
     values: dict[datetime, list[float]] = defaultdict(list)
+    unparseable = 0
     conn = sqlite3.connect(str(db_path))
     try:
         for ts, avg in _iter_time_and_avg_elo(conn, batch_size=batch_size):
             try:
                 dt = parse_battle_time_utc(ts)
             except ValueError:
+                unparseable += 1
                 continue
             start = base_bin_start(dt, base_width_days=base_width_days)
             values[start].append(avg)
     finally:
         conn.close()
+    if unparseable:
+        # An upstream timestamp format change would otherwise quietly thin every
+        # bin, biasing the percentiles without failing anything.
+        logger.warning(
+            "%d row(s) had an unparseable battle_time and were excluded from the ECDF",
+            unparseable,
+        )
     return dict(values)
 
 
