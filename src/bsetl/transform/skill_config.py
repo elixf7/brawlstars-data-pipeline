@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import json
-import re
-from pathlib import Path
-
 """
 Skill feature scope and configuration (minimal, versioned).
 """
@@ -47,53 +43,3 @@ def default_skill_config() -> dict[str, object]:
         "fallback_strategy": "none",
         "mapping": "normal",
     }
-
-
-# -----------------------------------------------------------------------------
-# Season helpers
-# -----------------------------------------------------------------------------
-
-_SEASON_RE = re.compile(r"(season)(\d+)", flags=re.IGNORECASE)
-
-
-def _extract_season_token(text: str) -> str | None:
-    """Extract normalized 'seasonNN' token from arbitrary text; return None if absent."""
-    m = _SEASON_RE.search(text)
-    if not m:
-        return None
-    prefix, digits = m.group(1).lower(), m.group(2)
-    return f"{prefix}{digits}"
-
-
-def derive_season_label(clean_db_path: str) -> str:
-    """Derive a normalized season label (e.g., 'season42') from a clean DB path."""
-    p = Path(clean_db_path).resolve()
-
-    token = _extract_season_token(p.parent.name)
-    if token:
-        return token
-
-    for part in p.parts:
-        token = _extract_season_token(part)
-        if token:
-            return token
-
-    token = _extract_season_token(p.stem)
-    if token:
-        return token
-
-    for meta_path in p.parent.glob("*_metadata.json"):
-        try:
-            data = json.loads(meta_path.read_text(encoding="utf-8"))
-            label = str(data.get("season_label", "")).strip()
-            token = _extract_season_token(label)
-            if token:
-                return token
-        except Exception:
-            continue
-
-    if p.parent.name:
-        return p.parent.name
-    return "unknown_season"
-
-

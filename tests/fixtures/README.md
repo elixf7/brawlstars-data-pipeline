@@ -2,7 +2,8 @@
 
 ## `season_sample.db`
 
-3,023 ranked sets sampled evenly across season42, carrying the real schema and
+3,023 ranked sets sampled evenly across season43 (drawn from a database
+mislabelled season42 — its matches postdate the 2025-10-16 reset), carrying the real schema and
 the `skill_ns` columns plus the `skill_bin_metadata` provenance table. Real
 brawler names, modes, maps, records, elo values, and timestamps — all 95
 brawlers and all 6 modes appear, spread over 16 days so time-binned code sees

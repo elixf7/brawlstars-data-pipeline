@@ -58,4 +58,4 @@ jobs:
             uv run "$c" --help > /dev/null
           done
       - name: The gate runs against the committed fixture
-        run: uv run bsetl-check --clean-db-path tests/fixtures/season_sample.db --season season42
+        run: uv run bsetl-check --clean-db-path tests/fixtures/season_sample.db --season season43

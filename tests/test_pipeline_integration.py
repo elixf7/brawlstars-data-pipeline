@@ -40,7 +40,7 @@ def test_fixture_is_present_and_populated():
 # ------------------------------------------------------------------- gate
 def test_real_shaped_season_passes_the_quality_gate(season):
     """The gate must not reject data that is merely real."""
-    report = run_quality_checks(season, season="season42")
+    report = run_quality_checks(season)
     failures = [f"{r.name}: {r.message}" for r in report.failures]
     assert report.ok, f"gate rejected real data: {failures}"
 
@@ -113,7 +113,7 @@ def test_clean_sqlite_keeps_the_data_and_the_index(season, tmp_path):
 
 # --------------------------------------------------------------- metadata
 def test_metadata_reflects_the_real_season(season):
-    meta = compute_season_metadata(season, season_label="season42")
+    meta = compute_season_metadata(season, season_label="season43")
     assert meta["num_matches"] > 1_000
     assert meta["num_unique_brawlers"] > 80
     assert set(meta["modes"]) <= {
@@ -124,7 +124,7 @@ def test_metadata_reflects_the_real_season(season):
 
 def test_card_renders_from_real_metadata(season):
     card = render_dataset_card(
-        compute_season_metadata(season, season_label="season42"),
+        compute_season_metadata(season, season_label="season43"),
         repo_id="me/bs",
     )
     assert card.startswith("---\n")
@@ -143,7 +143,7 @@ def test_skill_feature_recomputes_over_real_timestamps(season):
     proc = subprocess.run(
         [sys.executable, "-m", "bsetl.cli.skill_features",
          "--clean-db-path", season, "--bin-width-days", "3",
-         "--min-bin-count", "50", "--season", "season42"],
+         "--min-bin-count", "50", "--season", "season43"],
         capture_output=True, text=True,
     )
     assert proc.returncode == 0, proc.stderr[-2000:]

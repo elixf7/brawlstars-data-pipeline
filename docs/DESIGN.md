@@ -262,6 +262,39 @@ rate crosses a threshold, and a quality check reads it back from the run history
 and fails. The evidence has to live in the run record precisely because the rows
 themselves are gone.
 
+## Seasons are arithmetic
+
+Ranked resets on the third Thursday of each month, unchanged since the Ranked
+2.0 rework of February 2025. So the pipeline computes the current season from
+the calendar rather than being told, and rollover cannot be forgotten.
+
+The alternative was detecting resets statistically. That is possible — within a
+season the same player's elo drifts *upward*, with under 1% of players dropping
+more than one elo over a five-day gap, so a reset moving everyone down at once
+stands out enormously. But it needs a threshold, a trailing window, and enough
+paired players before it can say anything, and it can only ever report a
+boundary after the fact. A calendar rule needs none of that and is known in
+advance. If Supercell changes the schedule, `OVERRIDES` in
+`transform/seasons.py` takes the affected seasons; nothing else moves.
+
+Two consequences follow.
+
+**A database holds one season.** A database spanning a reset mixes two elo
+regimes under one label, and any `skill_ns` bin crossing the boundary computes
+percentiles over a bimodal population — numbers that look entirely plausible and
+are not. A quality check fails a database whose matches fall in more than one
+season. The season42 database in this repository is exactly that case: its
+matches run 2025-10-10 to 2025-11-06, straddling the 2025-10-16 reset, with
+almost all the volume after it.
+
+**Ingestion is bounded below by the season start.** Battle logs fetched just
+after a rollover still contain pre-reset matches, which belong to the previous
+season. The scheduled run passes the season start as `--latest-runtime`, so
+those are filtered rather than mixed in.
+
+The season a database holds is read from its earliest match, not from its
+filename. A path can say anything, and in this repository one of them does.
+
 ## Something has to decide whether the output is fit to publish
 
 An automated pipeline publishes whatever it produced. The failures worth

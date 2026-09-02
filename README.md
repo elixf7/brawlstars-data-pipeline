@@ -171,11 +171,18 @@ failed run still advanced the frontier.
 
 | | |
 | --- | --- |
-| `vars.BSETL_SEASON` | Current season label, e.g. `season50` |
 | `vars.BSETL_DATASET_REPO` | Hub dataset, e.g. `you/brawlstars-ranked` |
 | `secrets.BS_DEV_EMAIL` | Developer portal account |
 | `secrets.BS_DEV_PASSWORD` | Developer portal password |
 | `secrets.HF_TOKEN` | Hugging Face token with write access |
+
+The season is computed, not configured. Ranked resets on the third Thursday of each
+month, so the workflow works out which season is running and rolls over on its own:
+
+```bash
+uv run bsetl-season current
+# season53: 2026-08-20 to 2026-09-17 (15 days until the next reset)
+```
 
 Then drop seed tags for the season's first run into `seeds/<season>.txt` (see
 [`seeds/README.md`](seeds/README.md)); later runs resume the stored frontier and do

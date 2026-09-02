@@ -12,9 +12,10 @@ from bsetl.quality.checks import (
     Severity,
     Thresholds,
     check_schema,
+    check_season_window,
     check_skill_provenance,
 )
-from bsetl.transform.skill_config import derive_season_label
+from bsetl.transform.seasons import season_for_database
 
 logger = get_logger(__name__)
 
@@ -90,7 +91,7 @@ def run_quality_checks(
     a gate that crashes tells you less than one that says which check broke.
     """
     thresholds = thresholds or Thresholds()
-    season = season or derive_season_label(db_path)
+    season = season or season_for_database(db_path) or "unknown"
     report = QualityReport(db_path=db_path, season=season)
 
     if not Path(db_path).exists():
@@ -119,6 +120,14 @@ def run_quality_checks(
                     Severity.FAIL, f"Check raised {type(e).__name__}: {e}",
                 )
             report.results.extend(out if isinstance(out, list) else [out])
+
+        try:
+            report.results.append(check_season_window(conn, thresholds, db_path))
+        except Exception as e:
+            report.results.append(
+                CheckResult("season_window", Severity.FAIL,
+                            f"Check raised {type(e).__name__}: {e}")
+            )
 
         try:
             report.results.append(check_skill_provenance(conn, thresholds, season))

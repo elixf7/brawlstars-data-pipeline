@@ -71,10 +71,17 @@ as bots or corrupted records.
 
 ## Seasons and the meta
 
-Seasons run roughly a month, and a new one resets ratings. Between them, the
-**meta** — which brawlers and compositions are strong — shifts almost entirely
-through balance changes to individual brawlers' stats, rather than through map or
-rule changes.
+**A season starts on the third Thursday of each month**, a schedule fixed since
+the Ranked 2.0 rework in February 2025. The reset is soft: from Diamond 1 up,
+players drop six minor ranks from where they finished rather than returning to
+Bronze.
+
+That makes season boundaries arithmetic rather than something to detect, and the
+pipeline treats them as such — see [DESIGN.md](DESIGN.md#seasons-are-arithmetic).
+
+Between seasons the **meta** — which brawlers and compositions are strong —
+shifts almost entirely through balance changes to individual brawlers' stats,
+rather than through map or rule changes.
 
 That has a practical consequence for anyone modeling this data: adaptation should
 concentrate on brawler-level interactions, and pooling across seasons mixes

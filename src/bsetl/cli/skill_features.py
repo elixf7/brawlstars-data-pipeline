@@ -8,12 +8,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from bsetl.cli import add_logging_flags, configure_logging
+from bsetl.transform.seasons import season_for_database
 from bsetl.transform.skill_config import (
     SKILL_COLUMN,
     SKILL_COVERAGE_COLUMN,
     SKILL_FEATURE_VERSION,
     default_skill_config,
-    derive_season_label,
 )
 from bsetl.transform.skill_features import (
     base_bin_start,
@@ -221,7 +221,7 @@ def main() -> None:
     args = p.parse_args()
     configure_logging(args)
     clean_db_path = args.clean_db_path
-    season = args.season or derive_season_label(clean_db_path)
+    season = args.season or season_for_database(clean_db_path) or "unknown"
     bin_width_days: int = max(1, args.bin_width_days)
     min_bin_count: int = max(1, args.min_bin_count)
     epsilon: float = max(1e-9, float(args.epsilon))

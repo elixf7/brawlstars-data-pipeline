@@ -1,7 +1,7 @@
 # Seed tags
 
 Player tags a season's **first** crawl starts from, one per line, with the
-leading `#`. Named `<season>.txt` to match the `BSETL_SEASON` variable.
+leading `#`. Named `<season>.txt`, matching what `bsetl-season current` reports.
 
 Later runs do not need this file. Once a crawl has run, unvisited tags live in
 the `crawl_frontier` table inside the season database, and each scheduled run

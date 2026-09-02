@@ -16,7 +16,7 @@ from bsetl.publish.parquet import (
 )
 from bsetl.quality import run_quality_checks
 from bsetl.transform.metadata import compute_season_metadata
-from bsetl.transform.skill_config import derive_season_label
+from bsetl.transform.seasons import season_for_database
 
 
 def main() -> None:
@@ -38,7 +38,7 @@ def main() -> None:
     args = p.parse_args()
     configure_logging(args)
 
-    season = args.season or derive_season_label(args.clean_db_path)
+    season = args.season or season_for_database(args.clean_db_path) or "unknown"
 
     # Gate first: exporting a bad season wastes a minute, publishing one is
     # worse, and the whole point is that nobody is watching.

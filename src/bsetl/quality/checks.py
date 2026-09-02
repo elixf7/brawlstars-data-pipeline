@@ -21,6 +21,7 @@ from typing import Any
 
 from bsetl.logconfig import get_logger
 from bsetl.transform.records import record_is_well_formed
+from bsetl.transform.seasons import seasons_spanned
 from bsetl.transform.skill_config import SKILL_COLUMN, SKILL_COVERAGE_COLUMN
 
 logger = get_logger(__name__)
@@ -366,6 +367,30 @@ def check_skill_provenance(
             )
     return CheckResult("skill_provenance", Severity.OK,
                        f"Skill metadata consistent ({seasons[0] if seasons else 'unlabelled'})")
+
+
+def check_season_window(conn: sqlite3.Connection, t: Thresholds, db_path: str = "") -> CheckResult:
+    """A database must hold one season's matches, not two.
+
+    Ranked resets on the third Thursday of each month. A database spanning one
+    mixes two elo regimes under a single label, and any skill_ns bin crossing
+    the boundary computes percentiles over a bimodal population — numbers that
+    look fine and are not.
+    """
+    if not db_path:
+        return CheckResult("season_window", Severity.SKIP, "No database path")
+    seasons = seasons_spanned(db_path)
+    if not seasons:
+        return CheckResult("season_window", Severity.SKIP, "No usable timestamps")
+    if len(seasons) > 1:
+        return CheckResult(
+            "season_window", Severity.FAIL,
+            f"Data spans {len(seasons)} seasons ({', '.join(seasons)}); a reset "
+            "falls inside this database",
+            {"seasons": seasons},
+        )
+    return CheckResult("season_window", Severity.OK,
+                       f"All matches fall within {seasons[0]}", {"seasons": seasons})
 
 
 def check_ingest_health(conn: sqlite3.Connection, t: Thresholds) -> CheckResult:

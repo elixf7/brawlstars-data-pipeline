@@ -28,7 +28,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SEASON: ${{ inputs.season || vars.BSETL_SEASON }}
+  # Season is computed from the calendar, not configured. Set only to override.
+  SEASON_OVERRIDE: ${{ inputs.season }}
   DATASET_REPO: ${{ vars.BSETL_DATASET_REPO }}
   DB_PATH: data/seasons/working.db
   MAX_REQUESTS: ${{ inputs.max_requests || '20000' }}
@@ -53,9 +54,21 @@ jobs:
 
       - name: Check configuration
         run: |
-          test -n "$SEASON" || { echo "::error::Set the BSETL_SEASON repository variable"; exit 1; }
           test -n "$DATASET_REPO" || { echo "::error::Set the BSETL_DATASET_REPO repository variable"; exit 1; }
-          echo "Season: $SEASON -> $DATASET_REPO"
+
+      # Ranked resets on the third Thursday of each month, so the current
+      # season is arithmetic. Rollover is automatic and cannot be forgotten.
+      # SEASON_START bounds ingestion: battle logs fetched just after a reset
+      # still hold pre-reset matches, which belong to the previous season.
+      - name: Resolve season
+        run: |
+          if [ -n "$SEASON_OVERRIDE" ]; then
+            echo "SEASON=$SEASON_OVERRIDE" >> "$GITHUB_ENV"
+            echo "SEASON_START=1970-01-01T00:00:00Z" >> "$GITHUB_ENV"
+          else
+            uv run bsetl-season current --format env >> "$GITHUB_ENV"
+          fi
+          uv run bsetl-season current
 
       # The runner is ephemeral, but the crawl frontier and fetched-tag ledger
       # must persist. Missing state is normal on a season's first run.
@@ -80,6 +93,7 @@ jobs:
             --provision-key \
             --clean-db-path "$DB_PATH" \
             --tags-file seeds/${SEASON}.txt \
+            --latest-runtime "$SEASON_START" \
             --max-depth 2 \
             --elo-queue-min 13 --elo-queue-max 23 \
             --elo-game-min 12 --elo-game-max 23 \
