@@ -1,17 +1,17 @@
 ## Brawl Stars Ranked — Clean Database Data Dictionary
 
-This document describes the analysis-ready SQLite schema produced under `data_clean/`. It is designed to be stable across seasons and to serve as a reference for both current and future datasets.
+This document describes the analysis-ready SQLite schema produced under `data/seasons/`. It is designed to be stable across seasons and to serve as a reference for both current and future datasets.
 
-- Source build orchestration: see `notebooks/clean_db_builder.ipynb` (single-run and queued-run flows).
-- Core schema definition: `data_clean/schema.py`.
-- Time-local ECDF skill feature: `scripts/compute_skill_features.py` with config in `data_clean/skill_config.py` and helpers in `data_clean/skill_features.py`.
+- Source build orchestration: the `bsetl-ingest` and `bsetl-queue` commands (see the README).
+- Core schema definition: `src/bsetl/transform/schema.py`.
+- Time-local ECDF skill feature: the `bsetl-skill-features` command, with config in `src/bsetl/transform/skill_config.py` and helpers in `src/bsetl/transform/skill_features.py`.
 
 ### Scope and naming
 
-- Clean DB per season and version (example): `data_clean/season42/v1_clean.db`.
-- Clean DB with skill feature (example): `data_clean/season42/season42_combined_skill_ns.db`.
-- Skill feature sidecar JSON (example): `data_clean/season42/season42_skill_ns_metadata.json`.
-- Season summary sidecar JSON (example): `data_clean/season42/season42_v1_metadata.json`.
+- Clean DB per season and version (example): `data/seasons/season42/v1_clean.db`.
+- Clean DB with skill feature (example): `data/seasons/season42/season42_combined_skill_ns.db`.
+- Skill feature sidecar JSON (example): `data/seasons/season42/season42_skill_ns_metadata.json`.
+- Season summary sidecar JSON (example): `data/seasons/season42/season42_v1_metadata.json`.
 
 All timestamps are UTC. Column names are stable and lower snake-case, with per-team/per-slot patterns documented below.
 
@@ -103,7 +103,7 @@ Indexes:
 
 The optional `skill_ns` feature expresses a row’s `avg_elo` as a normalized score relative to other matches in a nearby time window. This helps adapt to meta/time effects.
 
-Configuration defaults (see `data_clean/skill_config.py`):
+Configuration defaults (see `src/bsetl/transform/skill_config.py`):
 
 - `BIN_WIDTH_DAYS = 3`
 - `MIN_BIN_COUNT = 5_000` (overridden at runtime in your notebook/example run to `100_000`)
@@ -203,19 +203,22 @@ ORDER BY m_count.bin_start_utc;
 
 ## Building or extending for future seasons
 
-1. Create a clean DB for the new season using `notebooks/clean_db_builder.ipynb`:
-   - Set `season_label`, `season_version`, and `latest_runtime`.
-   - Seed tags via the notebook (random sample from an existing clean DB or manual list).
-   - Run the async pull (`process_tags_and_write_async`), optionally queueing many small runs (`scripts.queue_runs`) to bound memory.
-2. Compute the skill feature (optional):
-   - Run `scripts/compute_skill_features.py` with desired knobs:
-     - `--clean-db-path`, `--bin-width-days`, `--min-bin-count`, `--epsilon`, `--mapping {normal,logit}`, `--fallback-strategy {none,global_season_ecdf}`, `--season` (optional).
-   - This adds `skill_ns`, `skill_ns_ok` to `matches`, creates/updates `skill_bin_metadata`, and writes the sidecar JSON.
-3. Write season summary metadata via the notebook (`write_season_metadata` / `compute_season_metadata` utility calls).
+1. Crawl into a new season database with `bsetl-ingest`, or `bsetl-queue` to chunk a
+   seed file into bounded subprocess runs. Seed tags can be sampled from an existing
+   season via `bsetl.state.seeding.sample_seed_tags_from_clean_db`.
+2. Compute the skill feature (optional) with `bsetl-skill-features`:
+   - `--clean-db-path`, `--bin-width-days`, `--min-bin-count`, `--epsilon`,
+     `--mapping {normal,logit}`, `--fallback-strategy {none,global_season_ecdf}`,
+     `--season` (optional).
+   - Adds `skill_ns` and `skill_ns_ok` to `matches`, creates or updates
+     `skill_bin_metadata`, and writes the sidecar JSON.
+3. Write the season summary sidecar with `bsetl.transform.write_season_metadata`.
+
+See the README for full command examples.
 
 ## Current database snapshot (season42)
 
-For `/data_clean/season42/season42_combined_skill_ns.db` (as inspected):
+For `/data/seasons/season42/season42_combined_skill_ns.db` (as inspected):
 
 - Tables: `matches` (~2.72M rows), `skill_bin_metadata` (10 rows)
 - `matches` columns include all core fields above plus `skill_ns`, `skill_ns_ok`

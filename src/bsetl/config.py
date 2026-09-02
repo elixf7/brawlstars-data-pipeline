@@ -1,8 +1,7 @@
 import os
-from typing import Optional
 
 
-def get_api_key(env_var: str = "BS_API_KEY", fallback_env_vars: Optional[list] = None) -> str:
+def get_api_key(env_var: str = "BS_API_KEY", fallback_env_vars: list | None = None) -> str:
     """Return the Brawl Stars API key from environment variables.
 
     Looks for `env_var` first (default: BS_API_KEY). Optionally checks

@@ -3,17 +3,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import datetime, timezone
-from typing import List, Optional
+from datetime import UTC, datetime
 
-from DB_Data_Pull.pull_data_4 import process_tags_and_write_async
-from utils.env_utils import get_api_key
+from bsetl.config import get_api_key
+from bsetl.ingest.crawler import process_tags_and_write_async
 
 
-def parse_tags(tags: List[str], tags_file: Optional[str]) -> List[str]:
+def parse_tags(tags: list[str], tags_file: str | None) -> list[str]:
     out = list(tags or [])
     if tags_file:
-        with open(tags_file, "r") as f:
+        with open(tags_file) as f:
             for line in f:
                 t = line.strip()
                 if t:
@@ -22,7 +21,7 @@ def parse_tags(tags: List[str], tags_file: Optional[str]) -> List[str]:
     out = [t if t.startswith("#") else f"#{t}" for t in out]
     # de-dup while preserving order
     seen = set()
-    deduped: List[str] = []
+    deduped: list[str] = []
     for t in out:
         if t not in seen:
             seen.add(t)
@@ -30,15 +29,15 @@ def parse_tags(tags: List[str], tags_file: Optional[str]) -> List[str]:
     return deduped
 
 
-def parse_datetime_utc(s: Optional[str]) -> datetime:
+def parse_datetime_utc(s: str | None) -> datetime:
     if not s:
-        return datetime(1970, 1, 1, tzinfo=timezone.utc)
+        return datetime(1970, 1, 1, tzinfo=UTC)
     s = s.strip()
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
     dt = datetime.fromisoformat(s)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt
 
 

@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import List, Optional, Tuple
 
 
 def sample_seed_tags_from_clean_db(
     clean_db_path: str,
     num_tags: int,
-    elo_range: Optional[Tuple[int, int]] = None,
-) -> List[str]:
+    elo_range: tuple[int, int] | None = None,
+) -> list[str]:
     """Sample distinct `star_player_tag` values from the clean `matches` table.
 
     Parameters
@@ -36,7 +35,7 @@ def sample_seed_tags_from_clean_db(
         return []
 
     where = ["star_player_tag IS NOT NULL"]
-    params: List[object] = []
+    params: list[object] = []
     if elo_range is not None:
         min_elo, max_elo = elo_range
         where.append("star_elo BETWEEN ? AND ?")

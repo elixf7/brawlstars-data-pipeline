@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from typing import List, Tuple
 import sqlite3
 
-
-MATCHES_COLUMNS: List[Tuple[str, str]] = [
+MATCHES_COLUMNS: list[tuple[str, str]] = [
     ("id", "INTEGER PRIMARY KEY"),
     ("battle_time", "TEXT"),
     ("mode", "TEXT"),
@@ -18,8 +16,8 @@ MATCHES_COLUMNS: List[Tuple[str, str]] = [
 ]
 
 
-def get_brawler_column_names() -> List[str]:
-    names: List[str] = []
+def get_brawler_column_names() -> list[str]:
+    names: list[str] = []
     for team in (1, 2):
         for slot in range(3):
             prefix = f"t{team}_b{slot}_"
@@ -33,7 +31,7 @@ def get_brawler_column_names() -> List[str]:
     return names
 
 
-def get_matches_column_defs() -> List[Tuple[str, str]]:
+def get_matches_column_defs() -> list[tuple[str, str]]:
     cols = MATCHES_COLUMNS.copy()
     for name in get_brawler_column_names():
         # team brawler fields: mostly INTEGER except name
@@ -88,7 +86,7 @@ def create_fetched_tags_table_if_not_exists(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def upsert_fetched_tags(conn: sqlite3.Connection, tags: List[str], fetched_utc: str) -> None:
+def upsert_fetched_tags(conn: sqlite3.Connection, tags: list[str], fetched_utc: str) -> None:
     """Bulk-upsert tags with a fetch timestamp. Overwrites existing rows."""
     if not tags:
         return

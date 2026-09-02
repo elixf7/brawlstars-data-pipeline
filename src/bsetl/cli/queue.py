@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 import time
-from typing import List
-import subprocess
 
 
-def load_tags(path: str) -> List[str]:
-    tags: List[str] = []
-    with open(path, "r") as f:
+def load_tags(path: str) -> list[str]:
+    tags: list[str] = []
+    with open(path) as f:
         for line in f:
             t = line.strip()
             if not t:
@@ -19,7 +18,7 @@ def load_tags(path: str) -> List[str]:
     return tags
 
 
-def chunked(seq: List[str], n: int) -> List[List[str]]:
+def chunked(seq: list[str], n: int) -> list[list[str]]:
     return [seq[i:i + n] for i in range(0, len(seq), n)]
 
 
@@ -60,7 +59,7 @@ def main() -> None:
         batches = batches[:args.max_runs]
 
     py = sys.executable
-    run_mod = "DB_Data_Pull.run_once"
+    run_mod = "bsetl.cli.ingest"
 
     for i, batch in enumerate(batches, 1):
         print(f"[{i}/{len(batches)}] Running batch of {len(batch)} tags...")

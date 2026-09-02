@@ -1,22 +1,24 @@
-import aiohttp
 import asyncio
-import urllib.parse
-import sqlite3
 import json
-import time
 import os
-from datetime import datetime, timezone
-from typing import List, Optional, Tuple, Any
+import sqlite3
+import urllib.parse
+from datetime import UTC, datetime
+from typing import Any
+
+import aiohttp
+
 try:
     from tqdm import tqdm
 except Exception:  # fallback in some notebook environments
     from tqdm.notebook import tqdm
 from collections import deque
 
-from data_clean.schema import (
+from bsetl.ingest.ratelimit import AsyncRateLimiter
+from bsetl.transform.schema import (
+    create_fetched_tags_table_if_not_exists,
     create_matches_table_if_not_exists,
     get_matches_insert_statement,
-    create_fetched_tags_table_if_not_exists,
     upsert_fetched_tags,
 )
 
@@ -30,49 +32,11 @@ from data_clean.schema import (
 
 def is_string_date_after(reference_dt, date_string):
     string_datetime = datetime.strptime(date_string, '%Y%m%dT%H%M%S.%fZ')
-    string_datetime = string_datetime.replace(tzinfo=timezone.utc)
+    string_datetime = string_datetime.replace(tzinfo=UTC)
     if reference_dt.tzinfo is None:
-        reference_dt = reference_dt.replace(tzinfo=timezone.utc)
+        reference_dt = reference_dt.replace(tzinfo=UTC)
     return string_datetime > reference_dt
 
-class AsyncRateLimiter:
-    """
-    Simple global requests-per-second limiter with shared 429 backoff.
-    Ensures at most `requests_per_second` acquisitions within any 1s window.
-    A 429 triggers a global cooldown so all tasks pause before retrying.
-    """
-    def __init__(self, requests_per_second: float):
-        self.requests_per_second = max(float(requests_per_second or 1.0), 0.1)
-        self._events = deque()
-        self._lock = asyncio.Lock()
-        self._backoff_until = 0.0
-
-    async def acquire(self):
-        while True:
-            # Respect global backoff if active
-            now = time.monotonic()
-            if now < self._backoff_until:
-                await asyncio.sleep(self._backoff_until - now)
-
-            async with self._lock:
-                now = time.monotonic()
-                # Drop timestamps older than 1s window
-                while self._events and (now - self._events[0]) >= 1.0:
-                    self._events.popleft()
-                if len(self._events) < self.requests_per_second:
-                    self._events.append(now)
-                    return
-                # Need to wait until the oldest acquisition falls out of the 1s window
-                earliest = self._events[0]
-                sleep_for = max(0.0, (earliest + 1.0) - now)
-            if sleep_for > 0:
-                await asyncio.sleep(sleep_for)
-
-    def trigger_backoff(self, seconds: float):
-        target = time.monotonic() + max(0.0, float(seconds))
-        # Extend backoff if longer than current
-        if target > self._backoff_until:
-            self._backoff_until = target
 
 def group_ranked_matches(battle_log):
     """
@@ -97,7 +61,7 @@ def group_ranked_matches(battle_log):
                     # If we already have starPlayer for the current game, we finalize it
                     games.append(current_game)
                     current_game = [battle]
-        except:
+        except Exception:
             continue
 
     return games
@@ -133,7 +97,7 @@ def get_player_tag_list(battle_log, exclusion_list):
                     tag = player['tag']
                     if tag not in exclusion_list:
                         tags.append(tag)
-        except:
+        except Exception:
             continue
     return list(set(tags))
 
@@ -146,7 +110,7 @@ def get_all_solo_ranked_tags_with_elos(battle_log):
     Return a list of (player_tag, elo) pairs found in 'soloRanked' matches.
     Elo is taken from player['brawler']['trophies'] within each match context.
     """
-    result: List[Tuple[str, Optional[float]]] = []
+    result: list[tuple[str, float | None]] = []
     if not battle_log:
         return result
     items = battle_log.get("items", [])
@@ -165,7 +129,7 @@ def get_all_solo_ranked_tags_with_elos(battle_log):
                         result.append((ptag, elo_val))
     return result
 
-def _is_elo_in_range(elo_value: Optional[float], elo_min: Optional[float], elo_max: Optional[float]) -> bool:
+def _is_elo_in_range(elo_value: float | None, elo_min: float | None, elo_max: float | None) -> bool:
     """Return True if elo_value is within [elo_min, elo_max] when provided."""
     if elo_value is None:
         return False
@@ -175,7 +139,7 @@ def _is_elo_in_range(elo_value: Optional[float], elo_min: Optional[float], elo_m
         return False
     return True
 
-def _validate_range(min_val: Optional[float], max_val: Optional[float], label: str) -> None:
+def _validate_range(min_val: float | None, max_val: float | None, label: str) -> None:
     """Raise ValueError if both provided and min_val > max_val."""
     if min_val is not None and max_val is not None and min_val > max_val:
         raise ValueError(f"Invalid {label}: min ({min_val}) > max ({max_val})")
@@ -271,7 +235,7 @@ def _pad_brawler_list(brawlers):
         })
     return arr[:3]
 
-def _compute_avg_elo(team1_brawlers, team2_brawlers) -> Optional[float]:
+def _compute_avg_elo(team1_brawlers, team2_brawlers) -> float | None:
     """Compute mean of available elo values across both teams; return None if none."""
     values = []
     for b in team1_brawlers + team2_brawlers:
@@ -288,9 +252,9 @@ def build_clean_row(
     latest_runtime: datetime,
     player_data_cache: dict,
     fetch_player_data: bool,
-    elo_game_min: Optional[float],
-    elo_game_max: Optional[float]
-) -> Optional[Tuple[Any, ...]]:
+    elo_game_min: float | None,
+    elo_game_max: float | None
+) -> tuple[Any, ...] | None:
     """
     Return a tuple of 40 values matching the `matches` column order or None.
     Applies avg_elo computation and filters out rows by elo_game_min/elo_game_max and avg_elo > 23.
@@ -361,7 +325,7 @@ def build_clean_row(
 
     return tuple(out)
 
-def insert_rows_matches_in_chunks(db_path: str, rows: List[Tuple[Any, ...]], chunksize: int = 10000) -> None:
+def insert_rows_matches_in_chunks(db_path: str, rows: list[tuple[Any, ...]], chunksize: int = 10000) -> None:
     """Bulk insert tuples into matches using fixed 40-column INSERT order."""
     if not rows:
         return
@@ -447,7 +411,7 @@ def process_game(game, perspective_tag, latest_runtime, player_data_cache, fetch
 # ASYNC API FUNCTIONS
 ########################
 
-async def fetch_json_async(url, headers, session, semaphore, retries=3, delay=.005, rate_limiter: Optional[AsyncRateLimiter] = None):
+async def fetch_json_async(url, headers, session, semaphore, retries=3, delay=.005, rate_limiter: AsyncRateLimiter | None = None):
     async with semaphore:
         for _ in range(retries):
             await asyncio.sleep(delay)
@@ -485,13 +449,13 @@ async def fetch_json_async(url, headers, session, semaphore, retries=3, delay=.0
                 await asyncio.sleep(1)
     return None
 
-async def fetch_battle_log_async(player_tag, api_key, session, semaphore, rate_limiter: Optional[AsyncRateLimiter] = None):
+async def fetch_battle_log_async(player_tag, api_key, session, semaphore, rate_limiter: AsyncRateLimiter | None = None):
     headers = {'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'Authorization': f'Bearer {api_key}'}
     encoded_tag = urllib.parse.quote(player_tag)
     url = f'https://api.brawlstars.com/v1/players/{encoded_tag}/battlelog'
     return await fetch_json_async(url, headers, session, semaphore, rate_limiter=rate_limiter)
 
-async def fetch_player_info_async(player_tag, api_key, session, semaphore, rate_limiter: Optional[AsyncRateLimiter] = None):
+async def fetch_player_info_async(player_tag, api_key, session, semaphore, rate_limiter: AsyncRateLimiter | None = None):
     headers = {'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'Authorization': f'Bearer {api_key}'}
     encoded_tag = urllib.parse.quote(player_tag)
     url = f'https://api.brawlstars.com/v1/players/{encoded_tag}'
@@ -540,18 +504,18 @@ def _build_clean_rows_from_logs(
 
 
 async def process_tags_and_write_async(
-    player_tags: List[str],
+    player_tags: list[str],
     api_key: str,
     latest_runtime: datetime,
     max_depth: int = 2,
     batch_size: int = 1500,
     concurrency: int = 40,
     fetch_player_data: bool = False,
-    clean_db_path: Optional[str] = None,
-    elo_queue_min: Optional[float] = None,
-    elo_queue_max: Optional[float] = None,
-    elo_game_min: Optional[float] = None,
-    elo_game_max: Optional[float] = None,
+    clean_db_path: str | None = None,
+    elo_queue_min: float | None = None,
+    elo_queue_max: float | None = None,
+    elo_game_min: float | None = None,
+    elo_game_max: float | None = None,
     prefilter_initial_tags: bool = False,
     requests_per_second: float = 5.0,
     fetched_tags_ttl_hours: float = 0.0,
@@ -584,7 +548,7 @@ async def process_tags_and_write_async(
     # Pre-load recently-fetched tags so BFS skips them across runs (Fix 1D)
     if fetched_tags_ttl_hours > 0.0 and clean_db_path and os.path.exists(clean_db_path):
         from datetime import timedelta
-        _cutoff = (datetime.now(timezone.utc) - timedelta(hours=fetched_tags_ttl_hours)).isoformat()
+        _cutoff = (datetime.now(UTC) - timedelta(hours=fetched_tags_ttl_hours)).isoformat()
         _preload_conn = sqlite3.connect(clean_db_path)
         try:
             _preload_conn.execute(
@@ -613,7 +577,7 @@ async def process_tags_and_write_async(
             coros = [fetch_player_info_async(t, api_key, session, semaphore, rate_limiter) for t in initial_tags]
             infos = await asyncio.gather(*coros)
             filtered = []
-            for t, info_json in zip(initial_tags, infos):
+            for t, info_json in zip(initial_tags, infos, strict=True):
                 if info_json:
                     player_info_cache[t] = info_json
                     try:
@@ -657,7 +621,7 @@ async def process_tags_and_write_async(
             results = await asyncio.gather(*fetch_coros)
 
             # Process each log
-            for (tag, depth), battle_log in zip(tasks, results):
+            for (tag, depth), battle_log in zip(tasks, results, strict=True):
                 if battle_log:
                     logs_dict[tag] = battle_log
 
@@ -690,7 +654,7 @@ async def process_tags_and_write_async(
                         insert_rows_matches_in_chunks, clean_db_path, _flush_rows, 10000
                     )
                 if fetched_tags_ttl_hours > 0.0 and clean_db_path:
-                    _now_utc = datetime.now(timezone.utc).isoformat()
+                    _now_utc = datetime.now(UTC).isoformat()
                     os.makedirs(os.path.dirname(os.path.abspath(clean_db_path)), exist_ok=True)
                     _mid_conn = sqlite3.connect(clean_db_path)
                     try:
@@ -711,7 +675,7 @@ async def process_tags_and_write_async(
                 for t in to_fetch
             ]
             results_info = await asyncio.gather(*tasks_info)
-            for t, info_json in zip(to_fetch, results_info):
+            for t, info_json in zip(to_fetch, results_info, strict=True):
                 if info_json:
                     player_info_cache[t] = info_json
             pbar_info.update(len(to_fetch))
@@ -719,7 +683,7 @@ async def process_tags_and_write_async(
 
     # Persist fetched tags so future runs can skip them (Fix 1A)
     if fetched_tags_ttl_hours > 0.0 and clean_db_path and visited_tags:
-        _now_utc = datetime.now(timezone.utc).isoformat()
+        _now_utc = datetime.now(UTC).isoformat()
         os.makedirs(os.path.dirname(os.path.abspath(clean_db_path)), exist_ok=True)
         _persist_conn = sqlite3.connect(clean_db_path)
         try:

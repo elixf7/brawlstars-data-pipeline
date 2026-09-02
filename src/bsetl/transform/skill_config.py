@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Dict, Optional
-
 
 """
 Skill feature scope and configuration (minimal, versioned).
@@ -34,7 +32,7 @@ SHRINKAGE_MIN_N: int = 2_000
 RECOMPUTE_CADENCE_DAYS: int = 3
 
 
-def default_skill_config() -> Dict[str, object]:
+def default_skill_config() -> dict[str, object]:
     """Return a copy of the default configuration as a plain dict."""
     return {
         "skill_column": SKILL_COLUMN,
@@ -58,7 +56,7 @@ def default_skill_config() -> Dict[str, object]:
 _SEASON_RE = re.compile(r"(season)(\d+)", flags=re.IGNORECASE)
 
 
-def _extract_season_token(text: str) -> Optional[str]:
+def _extract_season_token(text: str) -> str | None:
     """Extract normalized 'seasonNN' token from arbitrary text; return None if absent."""
     m = _SEASON_RE.search(text)
     if not m:

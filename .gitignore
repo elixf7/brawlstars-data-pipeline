@@ -49,3 +49,6 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+
+# uv-managed virtualenv
+.venv/

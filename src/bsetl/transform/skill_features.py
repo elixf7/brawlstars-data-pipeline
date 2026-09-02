@@ -1,24 +1,23 @@
 from __future__ import annotations
 
-import sqlite3
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
 import bisect
 import math
+import sqlite3
+from collections import defaultdict
+from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from .skill_config import (
     BIN_WIDTH_DAYS,
     MIN_BIN_COUNT,
 )
 
-
 # -----------------------------------------------------------------------------
 # Parsing and base bin assignment
 # -----------------------------------------------------------------------------
 
-_KNOWN_TS_FORMATS: Tuple[str, ...] = (
+_KNOWN_TS_FORMATS: tuple[str, ...] = (
     "%Y%m%dT%H%M%S.%fZ",  # e.g., 20250310T025416.000Z
     "%Y%m%dT%H%M%SZ",     # e.g., 20250310T025416Z
 )
@@ -36,14 +35,14 @@ def parse_battle_time_utc(ts: str) -> datetime:
     for fmt in _KNOWN_TS_FORMATS:
         try:
             dt = datetime.strptime(s, fmt)
-            return dt.replace(tzinfo=timezone.utc)
+            return dt.replace(tzinfo=UTC)
         except ValueError:
             pass
     # Last resort: try ISO-8601 after replacing Z
     try:
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
-        return datetime.fromisoformat(s).astimezone(timezone.utc)
+        return datetime.fromisoformat(s).astimezone(UTC)
     except Exception as e:
         raise ValueError(f"Unable to parse battle_time: {ts}") from e
 
@@ -51,8 +50,8 @@ def parse_battle_time_utc(ts: str) -> datetime:
 def floor_to_utc_midnight(dt: datetime) -> datetime:
     """Return dt truncated to 00:00:00 UTC."""
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return datetime(dt.year, dt.month, dt.day, tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
+    return datetime(dt.year, dt.month, dt.day, tzinfo=UTC)
 
 
 def base_bin_start(dt: datetime, base_width_days: int = BIN_WIDTH_DAYS) -> datetime:
@@ -64,7 +63,7 @@ def base_bin_start(dt: datetime, base_width_days: int = BIN_WIDTH_DAYS) -> datet
     """
     if base_width_days <= 0:
         raise ValueError("base_width_days must be positive")
-    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
     day0 = floor_to_utc_midnight(dt)
     delta_days = (day0 - epoch).days
     k = (delta_days // base_width_days) * base_width_days
@@ -75,7 +74,7 @@ def base_bin_start(dt: datetime, base_width_days: int = BIN_WIDTH_DAYS) -> datet
 # Fixed-bin value collection (no merging)
 # -----------------------------------------------------------------------------
 
-def _iter_time_and_avg_elo(conn: sqlite3.Connection, batch_size: int = 100_000) -> Iterable[Tuple[str, float]]:
+def _iter_time_and_avg_elo(conn: sqlite3.Connection, batch_size: int = 100_000) -> Iterable[tuple[str, float]]:
     cur = conn.execute(
         "SELECT battle_time, avg_elo FROM matches WHERE battle_time IS NOT NULL AND avg_elo IS NOT NULL"
     )
@@ -91,12 +90,12 @@ def collect_avg_elo_by_bin(
     clean_db_path: str,
     base_width_days: int = BIN_WIDTH_DAYS,
     batch_size: int = 100_000,
-) -> Dict[datetime, List[float]]:
+) -> dict[datetime, list[float]]:
     """Return mapping of base-bin start -> list of avg_elo values (unsorted)."""
     db_path = Path(clean_db_path)
     if not db_path.exists():
         raise RuntimeError(f"Clean DB not found: {db_path}")
-    values: Dict[datetime, List[float]] = defaultdict(list)
+    values: dict[datetime, list[float]] = defaultdict(list)
     conn = sqlite3.connect(str(db_path))
     try:
         for ts, avg in _iter_time_and_avg_elo(conn, batch_size=batch_size):
@@ -116,12 +115,12 @@ def collect_avg_elo_by_bin(
 # -----------------------------------------------------------------------------
 
 def build_bin_stats(
-    avg_elo_by_bin: Dict[datetime, List[float]],
+    avg_elo_by_bin: dict[datetime, list[float]],
     *,
     min_bin_count: int = MIN_BIN_COUNT,
-) -> Dict[datetime, Dict[str, object]]:
+) -> dict[datetime, dict[str, object]]:
     """Return {bin_start: {'values': sorted_values, 'n': int, 'coverage_ok': bool}}."""
-    out: Dict[datetime, Dict[str, object]] = {}
+    out: dict[datetime, dict[str, object]] = {}
     for bstart, vals in avg_elo_by_bin.items():
         sorted_vals = sorted(vals)
         n = len(sorted_vals)
@@ -133,7 +132,7 @@ def build_bin_stats(
     return out
 
 
-def midrank_percentile(value: float, sorted_values: List[float]) -> float:
+def midrank_percentile(value: float, sorted_values: list[float]) -> float:
     """Return midrank percentile p in (0,1) using (rank - 0.5) / (n + 1)."""
     n = len(sorted_values)
     if n == 0:
@@ -205,12 +204,12 @@ def percentile_to_logit_score(p: float, epsilon: float) -> float:
 def collect_global_avg_elo(
     clean_db_path: str,
     batch_size: int = 100_000,
-) -> List[float]:
+) -> list[float]:
     """Return sorted list of all avg_elo values."""
     db_path = Path(clean_db_path)
     if not db_path.exists():
         raise RuntimeError(f"Clean DB not found: {db_path}")
-    vals: List[float] = []
+    vals: list[float] = []
     conn = sqlite3.connect(str(db_path))
     try:
         for _, avg in _iter_time_and_avg_elo(conn, batch_size=batch_size):

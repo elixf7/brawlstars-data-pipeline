@@ -1,20 +1,18 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, List, Optional
 
 
-def _query_scalar(conn: sqlite3.Connection, sql: str) -> Optional[str]:
+def _query_scalar(conn: sqlite3.Connection, sql: str) -> str | None:
     cur = conn.execute(sql)
     row = cur.fetchone()
     return row[0] if row and row[0] is not None else None
 
 
-def _query_list(conn: sqlite3.Connection, sql: str) -> List[str]:
+def _query_list(conn: sqlite3.Connection, sql: str) -> list[str]:
     cur = conn.execute(sql)
     return [r[0] for r in cur.fetchall() if r and r[0] is not None]
 
@@ -31,7 +29,7 @@ def _count_rows(conn: sqlite3.Connection) -> int:
     return int(cur.fetchone()[0])
 
 
-def _unique_brawler_names(conn: sqlite3.Connection) -> List[str]:
+def _unique_brawler_names(conn: sqlite3.Connection) -> list[str]:
     """Return sorted list of all distinct brawler names across both teams and all slots."""
     name_cols = [
         f"t{team}_b{slot}_name" for team in (1, 2) for slot in range(3)
@@ -43,7 +41,7 @@ def _unique_brawler_names(conn: sqlite3.Connection) -> List[str]:
     return sorted(row[0] for row in cur.fetchall())
 
 
-def _brawler_usage_top(conn: sqlite3.Connection, top_n: int = 20) -> List[List]:
+def _brawler_usage_top(conn: sqlite3.Connection, top_n: int = 20) -> list[list]:
     name_cols = [
         f"t{team}_b{slot}_name" for team in (1, 2) for slot in range(3)
     ]
@@ -53,7 +51,7 @@ def _brawler_usage_top(conn: sqlite3.Connection, top_n: int = 20) -> List[List]:
     return [[name, count] for name, count in cur.fetchall()]
 
 
-def compute_season_metadata(clean_db_path: str, season_label: Optional[str] = None, top_n: int = 20) -> Dict:
+def compute_season_metadata(clean_db_path: str, season_label: str | None = None, top_n: int = 20) -> dict:
     """Compute basic season metadata from a clean DB.
 
     Returns a dictionary with: season_label, start_time, end_time, num_matches,
@@ -74,7 +72,7 @@ def compute_season_metadata(clean_db_path: str, season_label: Optional[str] = No
     finally:
         conn.close()
 
-    created_utc = datetime.now(tz=timezone.utc).isoformat()
+    created_utc = datetime.now(tz=UTC).isoformat()
     if season_label is None:
         # derive from file name if possible
         season_label = path.stem.replace("_clean", "")

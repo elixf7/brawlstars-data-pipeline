@@ -4,39 +4,31 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
-# Ensure repository root is importable when this file is executed by absolute path
-import sys as _sys
-from pathlib import Path as _P
-_REPO_ROOT = _P(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in _sys.path:
-    _sys.path.insert(0, str(_REPO_ROOT))
-
-from data_clean.skill_config import (
+from bsetl.transform.skill_config import (
     SKILL_COLUMN,
     SKILL_COVERAGE_COLUMN,
     SKILL_FEATURE_VERSION,
     default_skill_config,
     derive_season_label,
 )
-from data_clean.skill_features import (
+from bsetl.transform.skill_features import (
     base_bin_start,
     collect_avg_elo_by_bin,
     collect_global_avg_elo,
     midrank_percentile,
     parse_battle_time_utc,
-    percentile_to_normal_score,
     percentile_to_logit_score,
+    percentile_to_normal_score,
 )
 
 
 def _ensure_feature_columns(conn: sqlite3.Connection) -> None:
     cur = conn.execute("PRAGMA table_info('matches');")
     existing = {row[1] for row in cur.fetchall()}
-    ops: List[str] = []
+    ops: list[str] = []
     if SKILL_COLUMN not in existing:
         ops.append(f"ALTER TABLE matches ADD COLUMN {SKILL_COLUMN} REAL;")
     if SKILL_COVERAGE_COLUMN not in existing:
@@ -81,15 +73,15 @@ def _delete_existing_metadata(conn: sqlite3.Connection, season: str) -> None:
 def _insert_metadata(
     conn: sqlite3.Connection,
     season: str,
-    bin_stats: Dict[datetime, Dict[str, object]],
+    bin_stats: dict[datetime, dict[str, object]],
     *,
     bin_width_days: int,
     epsilon: float,
     fallback_strategy: str,
-) -> List[Dict[str, object]]:
-    created_utc = datetime.now(tz=timezone.utc).isoformat()
-    rows: List[Tuple] = []
-    out_json: List[Dict[str, object]] = []
+) -> list[dict[str, object]]:
+    created_utc = datetime.now(tz=UTC).isoformat()
+    rows: list[tuple] = []
+    out_json: list[dict[str, object]] = []
     for start, info in sorted(bin_stats.items()):
         n = int(info["n"])  # type: ignore[index]
         ok = 1 if bool(info["coverage_ok"]) else 0  # type: ignore[index]
@@ -136,7 +128,7 @@ def _insert_metadata(
     return out_json
 
 
-def _write_json_sidecar(clean_db_path: str, season: str, payload: Dict[str, object]) -> Path:
+def _write_json_sidecar(clean_db_path: str, season: str, payload: dict[str, object]) -> Path:
     db_path = Path(clean_db_path)
     out_path = db_path.with_name(f"{season}_skill_ns_metadata.json")
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -149,18 +141,18 @@ def _update_rows(
     *,
     bin_width_days: int,
     epsilon: float,
-    bin_stats: Dict[datetime, Dict[str, object]],
+    bin_stats: dict[datetime, dict[str, object]],
     fallback_strategy: str,
     mapping: str,
     update_batch_size: int = 20_000,
 ) -> None:
     # Optional global ECDF fallback
-    global_vals: Optional[List[float]] = None
+    global_vals: list[float] | None = None
     if fallback_strategy == "global_season_ecdf":
         global_vals = collect_global_avg_elo(clean_db_path)
 
     cur = conn.execute("SELECT id, battle_time, avg_elo FROM matches")
-    updates: List[Tuple[Optional[float], int, int]] = []
+    updates: list[tuple[float | None, int, int]] = []
     rows = cur.fetchmany(update_batch_size)
     while rows:
         for row in rows:
@@ -180,7 +172,7 @@ def _update_rows(
             bstart = base_bin_start(dt, base_width_days=bin_width_days)
             info = bin_stats.get(bstart)
             coverage_ok = 1 if (info and bool(info["coverage_ok"])) else 0
-            skill_value: Optional[float] = None
+            skill_value: float | None = None
 
             if avg is not None:
                 avg_f = float(avg)
@@ -246,7 +238,7 @@ def main() -> None:
         batch_size=read_batch_size,
     )
     # Build bin stats (sorted arrays + coverage flag)
-    from data_clean.skill_features import build_bin_stats  # local import to avoid cycle order
+    from bsetl.transform.skill_features import build_bin_stats  # local import to avoid cycle order
     bin_stats = build_bin_stats(avg_elo_by_bin, min_bin_count=min_bin_count)
 
     # Open DB and ensure columns/metadata table
@@ -285,7 +277,7 @@ def main() -> None:
         "mapping": mapping,
         "fallback_strategy": fallback_strategy,
         "bins": meta_rows,
-        "created_utc": datetime.now(tz=timezone.utc).isoformat(),
+        "created_utc": datetime.now(tz=UTC).isoformat(),
     }
     sidecar = _write_json_sidecar(clean_db_path, season, payload)
     print(f"Wrote skill features into {db_path}")

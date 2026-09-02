@@ -1,0 +1,66 @@
+[project]
+name = "bsetl"
+version = "0.1.0"
+description = "Automated ETL pipeline for Brawl Stars ranked match telemetry"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Eli Fried", email = "elixf7@gmail.com" }]
+keywords = ["etl", "data-pipeline", "brawl-stars", "game-telemetry", "sqlite"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+
+dependencies = [
+    "aiohttp>=3.9.5",
+    "requests>=2.32.3",
+    "tqdm>=4.66.4",
+]
+
+[project.optional-dependencies]
+# Exploration only. The pipeline itself does not import pandas.
+notebook = [
+    "pandas>=2.2.2",
+    "jupyterlab>=4.2",
+    "ipykernel>=6.29",
+]
+
+[project.scripts]
+bsetl-ingest = "bsetl.cli.ingest:main"
+bsetl-queue = "bsetl.cli.queue:main"
+bsetl-skill-features = "bsetl.cli.skill_features:main"
+
+[project.urls]
+Repository = "https://github.com/elifried/brawlstars-etl"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bsetl"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = [
+    "E501",  # line length is handled by the formatter
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
