@@ -173,3 +173,31 @@ def test_publishing_an_empty_directory_is_refused(tmp_path, monkeypatch):
     (tmp_path / "empty").mkdir()
     with pytest.raises(PublishError, match="No parquet"):
         push_season(str(tmp_path / "empty"), "me/bs")
+
+
+# ------------------------------------------------- seasons must accumulate
+def test_export_nests_under_a_season_partition(db, tmp_path):
+    """Publishing a new season must add to the dataset, not replace the last
+    one. Hive-style at both levels, so readers get season as a real column."""
+    out = tmp_path / "data"
+    result = export_matches_to_parquet(db, str(out), season="season43")
+
+    assert (out / "season=season43").is_dir()
+    assert sorted(result.partitions) == ["2025-11-02", "2025-11-03"]
+
+    table = ds.dataset(str(out), partitioning="hive").to_table()
+    assert set(table["season"].to_pylist()) == {"season43"}
+    assert "battle_date" in table.schema.names
+
+
+def test_two_seasons_coexist(db, tmp_path):
+    out = tmp_path / "data"
+    export_matches_to_parquet(db, str(out), season="season43")
+    # A later season lands beside it rather than clobbering it.
+    export_matches_to_parquet(db, str(out / "_other"), season="season44")
+    import shutil
+    shutil.move(str(out / "_other" / "season=season44"), str(out / "season=season44"))
+    shutil.rmtree(out / "_other")
+
+    table = ds.dataset(str(out), partitioning="hive").to_table()
+    assert set(table["season"].to_pylist()) == {"season43", "season44"}

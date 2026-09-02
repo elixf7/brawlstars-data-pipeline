@@ -95,6 +95,9 @@ def main() -> None:
                    help="Requests to spend before yield is judged (default: 2000)")
     b.add_argument("--yield-window-requests", type=int, default=2000,
                    help="Width of the trailing window used to measure yield (default: 2000)")
+    b.add_argument("--max-database-rows", type=int, default=None,
+                   help="Stop collecting once the database holds this many sets. "
+                        "A ceiling on the finished dataset, checked before each run.")
     b.add_argument("--no-resume", action="store_true",
                    help="Ignore the stored frontier and start from seeds only")
 
@@ -112,6 +115,28 @@ def main() -> None:
     if not tags and not resuming:
         raise SystemExit("No seed tags provided (use --tags or --tags-file)")
     latest_runtime = parse_datetime_utc(args.latest_runtime)
+
+    # A season should not grow without bound. Checked before the run rather
+    # than mid-crawl: one run adds a small fraction of the ceiling, so the
+    # overshoot is negligible and the check costs one query.
+    if args.max_database_rows and Path(args.clean_db_path).exists():
+        import sqlite3
+        try:
+            conn = sqlite3.connect(f"file:{args.clean_db_path}?mode=ro", uri=True)
+            have = conn.execute("SELECT COUNT(*) FROM sqlite_master "
+                                "WHERE type='table' AND name='matches'").fetchone()[0]
+            rows = conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0] if have else 0
+            conn.close()
+        except Exception:
+            rows = 0
+        if rows >= args.max_database_rows:
+            logger.info("Database holds %d sets, at or above the %d ceiling; "
+                        "collecting nothing further this season.",
+                        rows, args.max_database_rows)
+            print(json.dumps({"requests_made": 0, "rows_inserted": 0,
+                              "stop_reason": "row_ceiling_reached",
+                              "database_rows": rows}, indent=2))
+            return
 
     budget = RunBudget(
         max_requests=args.max_requests,

@@ -1,11 +1,11 @@
 name: Ingest
 
-# Frequent bounded crawls rather than one long seasonal batch. Each run
-# resumes the previous run's frontier, so a series of short runs behaves as
-# one continuous crawl — and each stays well inside a CI window.
+# Twice a week, Monday and Thursday. Each run resumes the previous run's
+# frontier, so a series of runs behaves as one continuous crawl. Runs are long
+# because they are infrequent: ten runs have to cover a whole season.
 on:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 6 * * 1,4"
   workflow_dispatch:
     inputs:
       season:
@@ -14,7 +14,7 @@ on:
       max_requests:
         description: "API request ceiling for this run"
         required: false
-        default: "20000"
+        default: "150000"
       publish:
         description: "Publish the dataset if the quality gate passes"
         type: boolean
@@ -37,14 +37,14 @@ env:
   SEASON_OVERRIDE: ${{ inputs.season }}
   DATASET_REPO: ${{ vars.BSETL_DATASET_REPO }}
   DB_PATH: data/seasons/working.db
-  MAX_REQUESTS: ${{ inputs.max_requests || '20000' }}
+  MAX_REQUESTS: ${{ inputs.max_requests || '150000' }}
 
 jobs:
   crawl:
     runs-on: ubuntu-latest
-    # Generous relative to the crawl's own 40-minute budget: the budget should
-    # end the run, not the runner.
-    timeout-minutes: 90
+    # Generous relative to the crawl's own 4-hour budget: the budget should end
+    # the run, not the runner. GitHub caps a job at 6 hours.
+    timeout-minutes: 300
 
     steps:
       - uses: actions/checkout@v4
@@ -99,15 +99,16 @@ jobs:
             --clean-db-path "$DB_PATH" \
             --tags-file seeds/${SEASON}.txt \
             --latest-runtime "$SEASON_START" \
-            --max-depth 2 \
+            --max-depth 3 \
             --elo-queue-min 13 --elo-queue-max 23 \
             --elo-game-min 12 --elo-game-max 23 \
             --fetched-tags-ttl-hours 24 \
             --flush-every-n-batches 5 \
-            --requests-per-second 8 \
+            --requests-per-second 15 \
             --max-requests "$MAX_REQUESTS" \
-            --max-seconds 2400 \
-            --min-rows-per-1k-requests 25 \
+            --max-seconds 14400 \
+            --min-rows-per-1k-requests 50 \
+            --max-database-rows 10000000 \
             > run-summary.json
           cat run-summary.json
 

@@ -81,15 +81,18 @@ def export_matches_to_parquet(
     db_path: str,
     out_dir: str,
     *,
+    season: str | None = None,
     batch_size: int = 200_000,
     compression: str = "zstd",
     overwrite: bool = True,
 ) -> ExportResult:
-    """Write `matches` as Parquet partitioned by day.
+    """Write `matches` as Parquet, partitioned by season and day.
 
-    Partitioned by battle date because that is how the data is consumed: a
-    season is analysed in time slices, and a reader wanting one week should not
-    have to scan the whole season.
+    Partitioned by day because that is how the data is consumed: a season is
+    analysed in time slices, and a reader wanting one week should not scan the
+    whole season. Partitioned by season above that so publishing a new season
+    adds to the dataset rather than replacing the last one — both levels are
+    Hive-style, so readers get `season` and `battle_date` as real columns.
     """
     src = Path(db_path)
     if not src.exists():
@@ -97,7 +100,8 @@ def export_matches_to_parquet(
     out = Path(out_dir)
     if out.exists() and overwrite:
         shutil.rmtree(out)
-    out.mkdir(parents=True, exist_ok=True)
+    root = out / f"season={season}" if season else out
+    root.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
     try:
@@ -127,7 +131,7 @@ def export_matches_to_parquet(
                         schema=schema,
                     )
                     if day not in writers:
-                        part = out / f"battle_date={day}"
+                        part = root / f"battle_date={day}"
                         part.mkdir(parents=True, exist_ok=True)
                         writers[day] = pq.ParquetWriter(
                             part / "data.parquet", schema, compression=compression
@@ -146,7 +150,10 @@ def export_matches_to_parquet(
         files=len(files),
         source_bytes=src.stat().st_size,
         parquet_bytes=sum(f.stat().st_size for f in files),
-        partitions=sorted(p.name.split("=", 1)[1] for p in out.iterdir() if p.is_dir()),
+        partitions=sorted(
+            p.name.split("=", 1)[1] for p in root.iterdir()
+            if p.is_dir() and p.name.startswith("battle_date=")
+        ),
     )
     logger.info(
         "Wrote %d rows into %d file(s), %.1f MB from %.1f MB (%.1fx smaller)",

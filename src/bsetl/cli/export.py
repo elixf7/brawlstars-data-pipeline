@@ -61,6 +61,7 @@ def main() -> None:
     result = export_matches_to_parquet(
         args.clean_db_path,
         str(out / "data"),
+        season=season,
         compression=args.compression if args.compression != "none" else None,
     )
 

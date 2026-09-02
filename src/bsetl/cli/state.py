@@ -6,7 +6,7 @@ import argparse
 
 from bsetl.cli import add_logging_flags, configure_logging
 from bsetl.publish.hub import PublishError
-from bsetl.publish.state import pull_state, push_state
+from bsetl.publish.state import pull_state, push_state, squash_history
 
 
 def main() -> None:
@@ -28,12 +28,28 @@ def main() -> None:
     push.add_argument("--season", required=True)
     push.add_argument("--db-path", required=True)
 
+    sq = sub.add_parser(
+        "squash",
+        help="Collapse the dataset repo's history into one commit. Removes old "
+             "versions of the working database; keeps every current file.",
+    )
+    sq.add_argument("--repo-id", required=True)
+    sq.add_argument("--yes", action="store_true", help="Required; the history is not recoverable")
+
     add_logging_flags(p)
     args = p.parse_args()
     configure_logging(args)
 
     try:
-        if args.command == "pull":
+        if args.command == "squash":
+            if not args.yes:
+                print("Would squash history for", args.repo_id)
+                print("Current files are untouched; old versions are discarded.")
+                print("Re-run with --yes.")
+                return
+            squash_history(args.repo_id)
+            print("squashed")
+        elif args.command == "pull":
             found = pull_state(args.repo_id, args.season, args.dest)
             if not found and not args.allow_missing:
                 raise SystemExit(f"error: no stored state for {args.season}")

@@ -92,3 +92,26 @@ def push_state(
     )
     logger.info("Stored %s (%.1f MB) to %s", season, src.stat().st_size / 1e6, repo_id)
     return state_path(season)
+
+
+def squash_history(repo_id: str, *, token: str | None = None) -> None:
+    """Collapse the dataset repo's commit history into a single commit.
+
+    The working database is pushed on every run and grows all season, and the
+    Hub keeps every version — so the stored revisions of `state/` come to dwarf
+    the dataset itself. Squashing discards those old *versions*.
+
+    It does not discard data. Every file present at HEAD stays exactly as it is,
+    and each season lives at its own path, so published seasons are unaffected.
+    What is lost is the ability to check out an earlier commit.
+    """
+    try:
+        from huggingface_hub import HfApi
+    except ImportError as e:
+        raise PublishError(
+            "huggingface-hub is not installed. Install the extra: uv sync --extra hub"
+        ) from e
+
+    api = HfApi(token=resolve_token(token))
+    api.super_squash_history(repo_id=repo_id, repo_type="dataset")
+    logger.info("Squashed commit history for %s; current files are unchanged", repo_id)

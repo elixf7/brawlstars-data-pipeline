@@ -1,0 +1,25 @@
+name: Maintenance
+
+# The working database is pushed every run and grows all season, and the Hub
+# keeps every version — so old revisions of state/ come to outweigh the dataset.
+# Squashing discards those versions. It does not touch any current file: each
+# season lives at its own path and stays exactly as it is.
+on:
+  schedule:
+    - cron: "0 5 1 * *"   # monthly, the 1st
+  workflow_dispatch:
+
+jobs:
+  squash-hub-history:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --extra hub
+      - env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          test -n "${{ vars.BSETL_DATASET_REPO }}" || { echo "::error::Set BSETL_DATASET_REPO"; exit 1; }
+          uv run bsetl-state squash --repo-id "${{ vars.BSETL_DATASET_REPO }}" --yes
