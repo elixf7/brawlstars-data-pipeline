@@ -103,11 +103,13 @@ jobs:
             --elo-queue-min 13 --elo-queue-max 23 \
             --elo-game-min 12 --elo-game-max 23 \
             --fetched-tags-ttl-hours 24 \
-            --flush-every-n-batches 5 \
+            --flush-every-n-batches 1 \
             --requests-per-second 15 \
             --max-requests "$MAX_REQUESTS" \
             --max-seconds 14400 \
             --min-rows-per-1k-requests 50 \
+            --yield-grace-requests 8000 \
+            --yield-window-requests 4000 \
             --max-database-rows 10000000 \
             > run-summary.json
           cat run-summary.json

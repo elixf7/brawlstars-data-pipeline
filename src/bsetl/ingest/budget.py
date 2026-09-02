@@ -43,9 +43,9 @@ class RunBudget:
     min_rows_per_1k_requests: float | None = None
     # Requests to spend before yield is judged at all. A crawl opens slowly:
     # the first batch discovers tags but has not written rows yet.
-    yield_grace_requests: int = 2_000
+    yield_grace_requests: int = 6_000
     # Width of the trailing window used to measure yield.
-    yield_window_requests: int = 2_000
+    yield_window_requests: int = 4_000
 
     def __post_init__(self) -> None:
         for name in ("max_requests", "yield_grace_requests", "yield_window_requests"):

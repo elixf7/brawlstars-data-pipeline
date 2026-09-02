@@ -647,18 +647,25 @@ async def process_tags_and_write_async(
             _preload_conn.close()
 
     async def _flush_logs() -> None:
-        """Write accumulated logs as rows and release the buffer."""
+        """Write accumulated logs as rows and release the buffer.
+
+        Always records the result, even when it is zero. Yield is measured from
+        these samples, so a flush that writes nothing has to say so — otherwise
+        a crawl that has simply not flushed yet is indistinguishable from one
+        finding nothing, and the yield-collapse check fires on a healthy run.
+        """
         nonlocal logs_dict
         if not logs_dict:
             return
         rows = _build_clean_rows_from_logs(
             logs_dict, latest_runtime, {}, False, elo_game_min, elo_game_max, stats
         )
+        inserted = 0
         if rows and clean_db_path:
             inserted = await asyncio.to_thread(
                 insert_rows_matches_in_chunks, clean_db_path, rows, 10000
             )
-            stats.record_rows(inserted)
+        stats.record_rows(inserted)
         if fetched_tags_ttl_hours > 0.0 and clean_db_path:
             _now = datetime.now(UTC).isoformat()
             os.makedirs(os.path.dirname(os.path.abspath(clean_db_path)), exist_ok=True)

@@ -110,3 +110,22 @@ def test_outcomes_and_summary_are_recorded():
 def test_nonsense_budgets_are_rejected(kwargs):
     with pytest.raises(ValueError):
         RunBudget(**kwargs)
+
+
+def test_a_flush_that_writes_nothing_still_registers():
+    """Rows are only counted at flush points. A flush writing zero must record
+    that, or a crawl which has simply not flushed yet looks identical to one
+    finding nothing — and yield collapse fires on a healthy run."""
+    budget = RunBudget(min_rows_per_1k_requests=50, yield_grace_requests=1_000,
+                       yield_window_requests=1_000)
+    stats = CrawlStats(budget=budget)
+    spend(stats, 2_000)
+    stats.record_rows(0)          # a real flush that found nothing
+    assert stats.recent_yield_per_1k() == 0.0
+    assert stats.should_stop() is StopReason.YIELD_COLLAPSED
+
+
+def test_grace_exceeds_a_realistic_flush_interval():
+    """Default batch size is 1500 and the pipeline flushes every batch, so the
+    grace period must span several flushes."""
+    assert RunBudget().yield_grace_requests >= 4 * 1_500
