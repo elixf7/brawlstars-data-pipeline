@@ -12,6 +12,7 @@ the pipeline should not stop for it.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -19,6 +20,7 @@ from enum import StrEnum
 from typing import Any
 
 from bsetl.logconfig import get_logger
+from bsetl.transform.records import record_is_well_formed
 from bsetl.transform.skill_config import SKILL_COLUMN, SKILL_COVERAGE_COLUMN
 
 logger = get_logger(__name__)
@@ -60,37 +62,14 @@ class Thresholds:
     #: Share of rows whose `record` cannot describe a real set. Any at all is
     #: worth a warning; a jump means set grouping has broken.
     max_malformed_record_rate: float = 0.001
+    #: Share of built sets a run may drop as impossible before it is suspect.
+    max_ingest_drop_rate: float = 0.01
 
 
 CORE_COLUMNS = ("battle_time", "mode", "map", "record", "avg_elo")
 KNOWN_MODES = frozenset(
     {"brawlBall", "gemGrab", "heist", "bounty", "hotZone", "knockout"}
 )
-RECORD_TOKENS = frozenset({"T1", "T2", "D"})
-
-
-def record_is_well_formed(record: str) -> bool:
-    """Whether a record could describe a real ranked set.
-
-    A set is first-to-two-wins; draws do not count toward that, so a set can run
-    past three games. What cannot happen is a game *after* one team reaches two
-    wins — the set is over. Records with fewer than two wins are partial sets
-    truncated by the 25-battle log window, which is normal and common: a bare
-    `T1` is the second most frequent shape in the data.
-    """
-    tokens = record.split("-")
-    if not tokens or any(t not in RECORD_TOKENS for t in tokens):
-        return False
-    wins = {"T1": 0, "T2": 0}
-    for i, token in enumerate(tokens):
-        if token == "D":
-            continue
-        wins[token] += 1
-        if wins[token] == 2:
-            return i == len(tokens) - 1
-    return max(wins.values()) <= 1
-
-
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
@@ -389,6 +368,46 @@ def check_skill_provenance(
                        f"Skill metadata consistent ({seasons[0] if seasons else 'unlabelled'})")
 
 
+def check_ingest_health(conn: sqlite3.Connection, t: Thresholds) -> CheckResult:
+    """Watch the rate at which ingestion drops impossible records.
+
+    Those rows are dropped before they reach `matches`, so the table itself
+    cannot show them. The evidence lives in the run history instead: a run that
+    discarded a large share of what it built means set grouping broke, and its
+    output should not be published however clean the surviving rows look.
+    """
+    if not _table_exists(conn, "pipeline_runs"):
+        return CheckResult("ingest_health", Severity.SKIP, "No run history")
+    row = conn.execute(
+        "SELECT rows_inserted, stats_json FROM pipeline_runs "
+        "WHERE status = 'ok' AND stats_json IS NOT NULL "
+        "ORDER BY started_utc DESC LIMIT 1"
+    ).fetchone()
+    if not row:
+        return CheckResult("ingest_health", Severity.SKIP, "No completed runs")
+    inserted, stats_json = row
+    try:
+        dropped = int(json.loads(stats_json).get("malformed_records") or 0)
+    except (ValueError, TypeError):
+        return CheckResult("ingest_health", Severity.SKIP, "Run stats unreadable")
+
+    built = (inserted or 0) + dropped
+    rate = dropped / built if built else 0.0
+    detail = {"dropped": dropped, "built": built, "rate": round(rate, 6)}
+    if rate > t.max_ingest_drop_rate:
+        return CheckResult(
+            "ingest_health", Severity.FAIL,
+            f"The last run dropped {dropped:,} of {built:,} sets ({rate:.2%}) as "
+            "impossible — set grouping has likely broken",
+            detail,
+        )
+    if dropped:
+        return CheckResult("ingest_health", Severity.OK,
+                           f"Last run dropped {dropped:,} merged set(s) ({rate:.3%})",
+                           detail)
+    return CheckResult("ingest_health", Severity.OK, "Last run dropped nothing", detail)
+
+
 CHECKS = (
     check_schema,
     check_dedup_index,
@@ -403,4 +422,5 @@ CHECKS = (
     check_time_coverage,
     check_skill_coverage,
     check_skill_distribution,
+    check_ingest_health,
 )

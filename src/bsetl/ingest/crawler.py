@@ -19,6 +19,7 @@ from bsetl.ingest.ratelimit import AsyncRateLimiter
 from bsetl.logconfig import get_logger, progress_enabled
 from bsetl.state.frontier import load_frontier, save_frontier
 from bsetl.state.runs import finish_run, start_run
+from bsetl.transform.records import record_is_well_formed
 from bsetl.transform.schema import (
     create_fetched_tags_table_if_not_exists,
     create_matches_table_if_not_exists,
@@ -57,6 +58,12 @@ BUDGET_SKIP = _Sentinel("BUDGET_SKIP")
 FETCH_FAILED = _Sentinel("FETCH_FAILED")
 
 logger = get_logger(__name__)
+
+#: Position of `record` in a built row, per the canonical column order.
+RECORD_INDEX = 4
+#: Dropping a trickle of merged sets is routine; dropping a large share means
+#: set grouping has broken and the data is not what it claims to be.
+MAX_MALFORMED_RATE = 0.01
 
 
 def is_string_date_after(reference_dt, date_string):
@@ -531,8 +538,16 @@ def _build_clean_rows_from_logs(
                 g, t, latest_runtime, player_info_cache,
                 fetch_player_data, elo_game_min, elo_game_max,
             )
-            if row:
-                rows.append(row)
+            if not row:
+                continue
+            # A record describing a game after one team already won the set
+            # means two adjacent sets were merged during grouping. The row is
+            # not a real match, so it is dropped rather than published.
+            if not record_is_well_formed(row[RECORD_INDEX]):
+                if stats is not None:
+                    stats.record_malformed()
+                continue
+            rows.append(row)
     return rows
 
 
@@ -811,6 +826,19 @@ async def process_tags_and_write_async(
         if stats.parse_failures:
             logger.warning("%d battle(s) could not be parsed and were skipped",
                            stats.parse_failures)
+        if stats.malformed_records:
+            built = stats.rows_inserted + stats.malformed_records
+            rate = stats.malformed_records / built if built else 0.0
+            if rate > MAX_MALFORMED_RATE:
+                logger.error(
+                    "Dropped %d set(s) with impossible records (%.2f%% of those built) "
+                    "— above the %.0f%% threshold. Set grouping is likely broken; "
+                    "do not publish this run.",
+                    stats.malformed_records, rate * 100, MAX_MALFORMED_RATE * 100,
+                )
+            else:
+                logger.info("Dropped %d merged set(s) with impossible records (%.3f%%)",
+                            stats.malformed_records, rate * 100)
         errored = stats.outcomes.get("error", 0)
         if errored:
             logger.warning("%d request(s) failed; their tags return to the frontier", errored)

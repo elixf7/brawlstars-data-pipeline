@@ -68,6 +68,7 @@ class CrawlStats:
     rows_inserted: int = 0
     tags_fetched: int = 0
     parse_failures: int = 0
+    malformed_records: int = 0
     outcomes: dict[str, int] = field(default_factory=dict)
 
     _started: float = field(default_factory=time.monotonic)
@@ -100,6 +101,10 @@ class CrawlStats:
 
     def record_parse_failure(self, n: int = 1) -> None:
         self.parse_failures += n
+
+    def record_malformed(self, n: int = 1) -> None:
+        """A set whose record could not describe a real match; dropped."""
+        self.malformed_records += n
 
     # -- derived ---------------------------------------------------------
     @property
@@ -149,6 +154,7 @@ class CrawlStats:
             "rows_inserted": self.rows_inserted,
             "tags_fetched": self.tags_fetched,
             "parse_failures": self.parse_failures,
+            "malformed_records": self.malformed_records,
             "elapsed_seconds": round(self.elapsed_seconds, 1),
             "recent_yield_per_1k": None if y is None else round(y, 1),
             **{f"http_{k}": v for k, v in sorted(self.outcomes.items())},

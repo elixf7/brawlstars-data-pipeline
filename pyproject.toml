@@ -38,6 +38,7 @@ bsetl-key = "bsetl.cli.key:main"
 bsetl-check = "bsetl.cli.check:main"
 bsetl-export = "bsetl.cli.export:main"
 bsetl-publish = "bsetl.cli.publish:main"
+bsetl-state = "bsetl.cli.state:main"
 bsetl-queue = "bsetl.cli.queue:main"
 bsetl-skill-features = "bsetl.cli.skill_features:main"
 

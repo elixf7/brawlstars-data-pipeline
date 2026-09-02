@@ -12,16 +12,27 @@ from bsetl.cli import add_logging_flags, configure_logging
 from bsetl.config import get_api_key
 from bsetl.ingest.budget import RunBudget
 from bsetl.ingest.crawler import process_tags_and_write_async
+from bsetl.logconfig import get_logger
+
+# Explicit: __name__ is "__main__" under `python -m`.
+logger = get_logger("bsetl.cli.ingest")
 
 
 def parse_tags(tags: list[str], tags_file: str | None) -> list[str]:
     out = list(tags or [])
     if tags_file:
-        with open(tags_file) as f:
-            for line in f:
+        path = Path(tags_file)
+        if path.exists():
+            for line in path.read_text().splitlines():
                 t = line.strip()
-                if t:
+                if t and not t.startswith("#!"):
                     out.append(t)
+        else:
+            # Only the first run of a season needs seeds; later runs resume the
+            # stored frontier, so a missing file is not fatal.
+            logger.info(
+                "Seed file %s not found; relying on the stored frontier", tags_file
+            )
     # ensure leading '#'
     out = [t if t.startswith("#") else f"#{t}" for t in out]
     # de-dup while preserving order
@@ -142,12 +153,15 @@ def main() -> None:
         except PortalError as e:
             raise SystemExit(f"error: {e}") from None
     else:
-        key_source = contextlib.nullcontext(get_api_key())
+        try:
+            key_source = contextlib.nullcontext(get_api_key())
+        except RuntimeError as e:
+            raise SystemExit(f"error: {e}") from None
 
     with key_source as provisioned:
         api_key = provisioned.key if args.provision_key else provisioned
         if args.provision_key:
-            print(f"Provisioned key {provisioned.key_id} for {provisioned.ip}")
+            logger.info("Provisioned key %s for %s", provisioned.key_id, provisioned.ip)
         stats = asyncio.run(_run(api_key))
 
     print(json.dumps(stats.summary(), indent=2))

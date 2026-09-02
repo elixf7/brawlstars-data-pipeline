@@ -11,8 +11,8 @@ league-wide elo drift that makes raw elo incomparable across a season.
 
 Roughly 2.7M ranked sets per season, ~600MB per database.
 
-> **Status.** Extraction, schema, the skill feature, the quality gate, and dataset
-> publishing are complete and in use. Scheduled execution is being built out.
+> **Status.** The pipeline runs end to end — bounded crawl, quality gate, Parquet
+> export, and publication — on a schedule via GitHub Actions.
 
 ## How it fits together
 
@@ -131,6 +131,50 @@ uv run bsetl-publish --local-dir data/exports/season50 --repo-id you/brawlstars-
 Then explore what landed with [`notebooks/explore_season.ipynb`](notebooks/explore_season.ipynb)
 (`uv sync --extra notebook` first). The notebook does not run the pipeline — that is
 what the CLI is for.
+
+## Running on a schedule
+
+[`.github/workflows/pipeline.yml`](.github/workflows/pipeline.yml) runs every six
+hours. Each run mints its own API key, crawls until it hits a budget, gates the
+result, publishes if it passes, and revokes the key on the way out.
+
+```
+restore working db  ──▶  crawl (bounded)  ──▶  quality gate  ──▶  export  ──▶  publish
+   from the Hub            mints + revokes         exit 1            Parquet      to the Hub
+                            its own key           on failure
+        ▲                                                                            │
+        └──────────────── store working db, even if the run failed ◀─────────────────┘
+```
+
+Runners are ephemeral, so the working database — carrying the crawl frontier,
+fetched-tag ledger, and run history — is stored beside the dataset under a `state/`
+prefix and restored at the start of each run. That is what makes a series of short
+runs equivalent to one continuous crawl. It is pushed back even on failure, since a
+failed run still advanced the frontier.
+
+**Setup.** Two repository variables and three secrets:
+
+| | |
+| --- | --- |
+| `vars.BSETL_SEASON` | Current season label, e.g. `season50` |
+| `vars.BSETL_DATASET_REPO` | Hub dataset, e.g. `you/brawlstars-ranked` |
+| `secrets.BS_DEV_EMAIL` | Developer portal account |
+| `secrets.BS_DEV_PASSWORD` | Developer portal password |
+| `secrets.HF_TOKEN` | Hugging Face token with write access |
+
+Then drop seed tags for the season's first run into `seeds/<season>.txt` (see
+[`seeds/README.md`](seeds/README.md)); later runs resume the stored frontier and do
+not need it.
+
+Confirm the portal credentials work before relying on them:
+
+```bash
+uv run bsetl-key check
+```
+
+Adjust the cadence with the `cron` line, and the per-run size with `--max-requests`
+and `--max-seconds`. Note that GitHub disables scheduled workflows on repositories
+with no activity for 60 days.
 
 ## Documentation
 

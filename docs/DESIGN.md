@@ -215,6 +215,53 @@ The key is never rendered. `ProvisionedKey.__repr__` redacts it, because the
 realistic leak is not someone printing it deliberately — it is a traceback, a
 debug log, or a CI transcript that happens to include an object.
 
+## Running unattended on an ephemeral runner
+
+The schedule is frequent short crawls rather than one long seasonal batch. Each
+run resumes the previous run's frontier, so a series of them behaves as one
+continuous crawl while each stays well inside a CI window. It also means a
+failed run costs one interval rather than a season.
+
+Three things have to be true for that to work.
+
+**State must outlive the runner.** A CI runner keeps nothing. But a bounded
+crawl is only worthwhile if the next run continues it: the frontier is what it
+picks up, `fetched_tags` is what stops it re-fetching, and the unique index is
+what makes overlapping crawls idempotent. Start from an empty database and all
+three guarantees are gone. So the working database is stored beside the
+published dataset under a `state/` prefix — outside the `data/**` glob the
+dataset config matches, so it is versioned by the same mechanism as the data
+without ever being presented as part of it.
+
+The database is pushed back even when the run fails the quality gate or crashes
+outright. A failed run still advanced the frontier and the fetched-tag ledger,
+and discarding that would make the next run pay again for work already done.
+
+**Runs must not overlap.** Two concurrent crawls would resume the same frontier
+and duplicate every request, and the key sweep assumes one pipeline per name
+prefix — parallel runs would revoke each other's keys mid-crawl. The workflow
+takes a concurrency group with `cancel-in-progress: false`, so a run that
+overruns its slot delays the next one rather than being killed halfway.
+
+**Output must be machine-readable.** The run summary is JSON on stdout and
+everything else is on stderr, so the workflow can capture one without parsing
+around the other.
+
+## Impossible records are dropped, and the dropping is watched
+
+A record describing a game after one team already won the set did not happen;
+it is two adjacent sets merged during grouping. Those rows are now dropped at
+ingest rather than published, since a consumer has no way to tell them from real
+matches.
+
+Dropping silently would be worse than keeping them, though. A trickle is
+routine — season42 has 0.0144% — but a large share means set grouping has broken
+and everything that run produced is suspect, however clean the surviving rows
+look. So the count travels into the run record, the crawl logs an error when the
+rate crosses a threshold, and a quality check reads it back from the run history
+and fails. The evidence has to live in the run record precisely because the rows
+themselves are gone.
+
 ## Something has to decide whether the output is fit to publish
 
 An automated pipeline publishes whatever it produced. The failures worth

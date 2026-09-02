@@ -1,0 +1,137 @@
+name: Ingest
+
+# Frequent bounded crawls rather than one long seasonal batch. Each run
+# resumes the previous run's frontier, so a series of short runs behaves as
+# one continuous crawl — and each stays well inside a CI window.
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Season label, e.g. season50"
+        required: false
+      max_requests:
+        description: "API request ceiling for this run"
+        required: false
+        default: "20000"
+      publish:
+        description: "Publish the dataset if the quality gate passes"
+        type: boolean
+        default: true
+
+# One crawl at a time. Two concurrent runs would resume the same frontier and
+# duplicate every request, and the key sweep assumes a single pipeline per
+# name prefix — parallel runs would revoke each other's keys mid-crawl.
+concurrency:
+  group: bsetl-ingest
+  cancel-in-progress: false
+
+env:
+  SEASON: ${{ inputs.season || vars.BSETL_SEASON }}
+  DATASET_REPO: ${{ vars.BSETL_DATASET_REPO }}
+  DB_PATH: data/seasons/working.db
+  MAX_REQUESTS: ${{ inputs.max_requests || '20000' }}
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    # Generous relative to the crawl's own 40-minute budget: the budget should
+    # end the run, not the runner.
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --extra hub
+
+      - name: Check configuration
+        run: |
+          test -n "$SEASON" || { echo "::error::Set the BSETL_SEASON repository variable"; exit 1; }
+          test -n "$DATASET_REPO" || { echo "::error::Set the BSETL_DATASET_REPO repository variable"; exit 1; }
+          echo "Season: $SEASON -> $DATASET_REPO"
+
+      # The runner is ephemeral, but the crawl frontier and fetched-tag ledger
+      # must persist. Missing state is normal on a season's first run.
+      - name: Restore working database
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          uv run bsetl-state pull \
+            --repo-id "$DATASET_REPO" --season "$SEASON" \
+            --dest "$DB_PATH" --allow-missing
+
+      # --provision-key signs in to the developer portal, mints a key scoped to
+      # this runner's address, and revokes it when the run ends. No long-lived
+      # key exists to leak.
+      - name: Crawl
+        id: crawl
+        env:
+          BS_DEV_EMAIL: ${{ secrets.BS_DEV_EMAIL }}
+          BS_DEV_PASSWORD: ${{ secrets.BS_DEV_PASSWORD }}
+        run: |
+          uv run bsetl-ingest \
+            --provision-key \
+            --clean-db-path "$DB_PATH" \
+            --tags-file seeds/${SEASON}.txt \
+            --max-depth 2 \
+            --elo-queue-min 13 --elo-queue-max 23 \
+            --elo-game-min 12 --elo-game-max 23 \
+            --fetched-tags-ttl-hours 24 \
+            --flush-every-n-batches 5 \
+            --requests-per-second 8 \
+            --max-requests "$MAX_REQUESTS" \
+            --max-seconds 2400 \
+            --min-rows-per-1k-requests 25 \
+            > run-summary.json
+          cat run-summary.json
+
+      - name: Quality gate
+        id: gate
+        run: uv run bsetl-check --clean-db-path "$DB_PATH" --season "$SEASON"
+
+      - name: Export
+        if: success()
+        run: |
+          uv run bsetl-export \
+            --clean-db-path "$DB_PATH" \
+            --out-dir "exports/$SEASON" \
+            --season "$SEASON" \
+            --repo-id "$DATASET_REPO"
+
+      - name: Publish
+        if: success() && (github.event_name == 'schedule' || inputs.publish)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          uv run bsetl-publish \
+            --local-dir "exports/$SEASON" \
+            --repo-id "$DATASET_REPO" \
+            --message "Scheduled update $(date -u +%Y-%m-%dT%H:%MZ)" \
+            --yes
+
+      # Always: a run that failed the gate, or crashed, still advanced the
+      # frontier and the fetched-tag ledger. Discarding that would make the
+      # next run repeat work this one already paid for.
+      - name: Store working database
+        if: always() && hashFiles('data/seasons/working.db') != ''
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          uv run bsetl-state push \
+            --repo-id "$DATASET_REPO" --season "$SEASON" --db-path "$DB_PATH"
+
+      - name: Upload run summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-summary-${{ github.run_id }}
+          path: run-summary.json
+          if-no-files-found: ignore
+          retention-days: 30
