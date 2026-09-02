@@ -114,6 +114,18 @@ jobs:
             > run-summary.json
           cat run-summary.json
 
+      # Recomputed over the whole season each run: the ECDF for a time bin
+      # changes as that bin fills, so bins near the end of the last run were
+      # computed on partial data.
+      - name: Compute skill feature
+        run: |
+          uv run bsetl-skill-features \
+            --clean-db-path "$DB_PATH" \
+            --season "$SEASON" \
+            --bin-width-days 3 \
+            --min-bin-count 5000 \
+            --mapping normal
+
       - name: Quality gate
         id: gate
         run: uv run bsetl-check --clean-db-path "$DB_PATH" --season "$SEASON"
