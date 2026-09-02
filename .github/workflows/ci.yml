@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # So the scheduled pipeline is never the first thing to discover a break.
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras
+      - name: Ruff
+        run: uv run ruff check src/ tests/ --output-format=github
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Floor is what pyproject declares; ceiling is what the pipeline runs on.
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install on Python ${{ matrix.python-version }}
+        run: uv sync --all-extras --python ${{ matrix.python-version }}
+      - name: Tests
+        run: uv run --python ${{ matrix.python-version }} pytest -q --durations=5
+
+  cli:
+    # The entry points are how the pipeline is actually invoked, so a broken
+    # one is a production failure that unit tests would not catch.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras
+      - name: Every command responds
+        run: |
+          for c in bsetl-ingest bsetl-queue bsetl-key bsetl-skill-features \
+                   bsetl-check bsetl-export bsetl-publish bsetl-state; do
+            echo "--- $c"
+            uv run "$c" --help > /dev/null
+          done
+      - name: The gate runs against the committed fixture
+        run: uv run bsetl-check --clean-db-path tests/fixtures/season_sample.db --season season42

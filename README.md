@@ -1,5 +1,10 @@
 # Brawl Stars Ranked Telemetry ETL
 
+[![CI](https://github.com/elixf7/brawlstars-data-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/elixf7/brawlstars-data-pipeline/actions/workflows/ci.yml)
+[![Ingest](https://github.com/elixf7/brawlstars-data-pipeline/actions/workflows/pipeline.yml/badge.svg)](https://github.com/elixf7/brawlstars-data-pipeline/actions/workflows/pipeline.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 An automated pipeline that ingests ranked match data from the public Brawl Stars
 API and turns it into an analysis-ready dataset for model training.
 
@@ -42,7 +47,17 @@ Brawl Stars API
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv sync
+uv sync              # runtime
+uv sync --all-extras # plus publishing and notebook support
+```
+
+Tests run against a committed sample of a real season, so the transform, quality,
+and export paths are exercised on realistically shaped data rather than only
+hand-built rows:
+
+```bash
+uv run pytest
+uv run ruff check src/ tests/
 ```
 
 Get a key from the [developer portal](https://developer.brawlstars.com) and export it.
