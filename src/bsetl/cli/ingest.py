@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 from bsetl.config import get_api_key
+from bsetl.ingest.budget import RunBudget
 from bsetl.ingest.crawler import process_tags_and_write_async
 
 
@@ -63,15 +66,43 @@ def main() -> None:
     p.add_argument("--flush-every-n-batches", type=int, default=0,
                    help="Flush rows to DB every N BFS batches to cap memory use (0 = disabled)")
 
+    b = p.add_argument_group(
+        "budget",
+        "Bounds on the run. An unattended crawl must stop on its own; without "
+        "any of these it runs until the frontier empties.",
+    )
+    b.add_argument("--max-requests", type=int, default=None,
+                   help="Stop after this many API requests")
+    b.add_argument("--max-seconds", type=float, default=None,
+                   help="Stop after this many seconds of wall clock")
+    b.add_argument("--min-rows-per-1k-requests", type=float, default=None,
+                   help="Stop when the trailing window yields fewer newly inserted "
+                        "rows than this per 1000 requests")
+    b.add_argument("--yield-grace-requests", type=int, default=2000,
+                   help="Requests to spend before yield is judged (default: 2000)")
+    b.add_argument("--yield-window-requests", type=int, default=2000,
+                   help="Width of the trailing window used to measure yield (default: 2000)")
+    b.add_argument("--no-resume", action="store_true",
+                   help="Ignore the stored frontier and start from seeds only")
+
     args = p.parse_args()
     api_key = get_api_key()  # BS_API_KEY (or BRAWLSTARS_API_KEY) from the environment
     tags = parse_tags(args.tags, args.tags_file)
-    if not tags:
+    resuming = not args.no_resume and Path(args.clean_db_path).exists()
+    if not tags and not resuming:
         raise SystemExit("No seed tags provided (use --tags or --tags-file)")
     latest_runtime = parse_datetime_utc(args.latest_runtime)
 
-    async def _run() -> None:
-        await process_tags_and_write_async(
+    budget = RunBudget(
+        max_requests=args.max_requests,
+        max_seconds=args.max_seconds,
+        min_rows_per_1k_requests=args.min_rows_per_1k_requests,
+        yield_grace_requests=args.yield_grace_requests,
+        yield_window_requests=args.yield_window_requests,
+    )
+
+    async def _run():
+        return await process_tags_and_write_async(
             player_tags=tags,
             api_key=api_key,
             latest_runtime=latest_runtime,
@@ -88,9 +119,12 @@ def main() -> None:
             requests_per_second=args.requests_per_second,
             fetched_tags_ttl_hours=args.fetched_tags_ttl_hours,
             flush_every_n_batches=args.flush_every_n_batches,
+            budget=budget,
+            resume=not args.no_resume,
         )
 
-    asyncio.run(_run())
+    stats = asyncio.run(_run())
+    print(json.dumps(stats.summary(), indent=2))
 
 
 if __name__ == "__main__":

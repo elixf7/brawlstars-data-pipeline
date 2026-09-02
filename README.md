@@ -63,6 +63,23 @@ average elo falls in the game range and only following players in the queue rang
 uv run bsetl-ingest --tags '#9UUU9QVU' --clean-db-path data/seasons/season50/v1.db --max-depth 2 --elo-queue-min 13 --elo-queue-max 23 --elo-game-min 12 --elo-game-max 23 --fetched-tags-ttl-hours 24
 ```
 
+**A bounded crawl**, which is how it runs on a schedule. It stops on a request
+ceiling, a time ceiling, or when it stops finding anything new — whichever comes
+first — and prints a summary of what it did. The unvisited frontier is saved, so the
+next run picks up where this one left off rather than restarting from seeds.
+
+```bash
+uv run bsetl-ingest --clean-db-path data/seasons/season50/v1.db --max-requests 20000 --max-seconds 2400 --min-rows-per-1k-requests 40 --flush-every-n-batches 5 --elo-game-min 12 --elo-game-max 23 --fetched-tags-ttl-hours 24
+```
+
+Every run records itself in a `pipeline_runs` table — configuration, stop reason,
+requests, rows inserted, HTTP outcomes, and frontier size before and after:
+
+```python
+from bsetl.state import recent_runs
+recent_runs("data/seasons/season50/v1.db", limit=5)
+```
+
 **Many short crawls.** Chunks a seed file into separate subprocesses so memory stays
 bounded on long runs.
 

@@ -22,6 +22,13 @@ All timestamps are UTC. Column names are stable and lower snake-case, with per-t
 - `matches` (wide, one row per ranked set): Core match metadata, star-player summary, per-team brawler fields, and optional derived features like `skill_ns`.
 - `skill_bin_metadata` (when skill feature is computed): Summary rows describing the time-bin coverage and configuration used for feature computation.
 
+Alongside these, the database carries the pipeline's own operational state. These
+are not analysis data; a published dataset need not include them.
+
+- `fetched_tags` (`tag`, `fetched_utc`): every player tag fetched, so later runs can skip players whose battle-log window has not turned over.
+- `crawl_frontier` (`tag`, `depth`, `enqueued_utc`): tags discovered but not yet fetched. Written when a run stops, loaded when the next one starts, which is what lets a series of bounded runs behave as one long crawl.
+- `pipeline_runs` (`run_id`, `started_utc`, `finished_utc`, `status`, `stop_reason`, `requests_made`, `rows_inserted`, `tags_fetched`, `parse_failures`, `elapsed_seconds`, `frontier_before`, `frontier_after`, `stats_json`, `config_json`): one row per crawl. Inserted as `running` before the first request and updated on completion, so an interrupted run stays visible.
+
 ## Table: `matches`
 
 One row per ranked set (the last game’s timestamp for the set). All columns are NULL-able to accommodate missing data from the API.

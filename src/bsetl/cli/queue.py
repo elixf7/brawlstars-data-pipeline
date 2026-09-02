@@ -47,6 +47,13 @@ def main() -> None:
     p.add_argument("--flush-every-n-batches", type=int, default=0,
                    help="Flush rows to DB every N BFS batches to cap memory use (0 = disabled)")
 
+    # Budgets apply per subprocess run, not to the queue as a whole. For a
+    # scheduled crawl prefer a single budgeted `bsetl-ingest`, which resumes
+    # from the persistent frontier and bounds the whole run at once.
+    p.add_argument("--max-requests", type=int, default=None)
+    p.add_argument("--max-seconds", type=float, default=None)
+    p.add_argument("--min-rows-per-1k-requests", type=float, default=None)
+
     args = p.parse_args()
 
     tags = load_tags(args.tags_file)
@@ -93,6 +100,13 @@ def main() -> None:
             cmd += ["--fetched-tags-ttl-hours", str(args.fetched_tags_ttl_hours)]
         if args.flush_every_n_batches > 0:
             cmd += ["--flush-every-n-batches", str(args.flush_every_n_batches)]
+        for flag, val in (
+            ("--max-requests", args.max_requests),
+            ("--max-seconds", args.max_seconds),
+            ("--min-rows-per-1k-requests", args.min_rows_per_1k_requests),
+        ):
+            if val is not None:
+                cmd += [flag, str(val)]
 
         # Inline provide tags for this run
         cmd += ["--tags"] + batch

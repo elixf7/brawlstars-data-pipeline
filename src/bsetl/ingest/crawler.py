@@ -14,7 +14,10 @@ except Exception:  # fallback in some notebook environments
     from tqdm.notebook import tqdm
 from collections import deque
 
+from bsetl.ingest.budget import CrawlStats, Outcome, RunBudget, StopReason
 from bsetl.ingest.ratelimit import AsyncRateLimiter
+from bsetl.state.frontier import load_frontier, save_frontier
+from bsetl.state.runs import finish_run, start_run
 from bsetl.transform.schema import (
     create_fetched_tags_table_if_not_exists,
     create_matches_table_if_not_exists,
@@ -30,6 +33,19 @@ from bsetl.transform.schema import (
 # HELPER FUNCTIONS
 ########################
 
+class _BudgetSkip:
+    """Returned instead of a response when the budget is spent.
+
+    Distinct from None, which means the request happened and yielded nothing.
+    A skipped tag has to go back on the frontier; an empty one must not.
+    """
+
+    __slots__ = ()
+
+
+BUDGET_SKIP = _BudgetSkip()
+
+
 def is_string_date_after(reference_dt, date_string):
     string_datetime = datetime.strptime(date_string, '%Y%m%dT%H%M%S.%fZ')
     string_datetime = string_datetime.replace(tzinfo=UTC)
@@ -38,7 +54,7 @@ def is_string_date_after(reference_dt, date_string):
     return string_datetime > reference_dt
 
 
-def group_ranked_matches(battle_log):
+def group_ranked_matches(battle_log, stats: CrawlStats | None = None):
     """
     Return a list of 'games', each game is a list of 1-2 items (battles),
     but only if they are 'soloRanked'.
@@ -62,6 +78,8 @@ def group_ranked_matches(battle_log):
                     games.append(current_game)
                     current_game = [battle]
         except Exception:
+            if stats is not None:
+                stats.record_parse_failure()
             continue
 
     return games
@@ -86,20 +104,6 @@ def format_record(game, perspective_tag):
             record += f'T{opponent_team}-'
     return record[:-1]
 
-def get_player_tag_list(battle_log, exclusion_list):
-    tags = []
-    if battle_log is None:
-        return tags
-    for battle in battle_log.get('items', []):
-        try:
-            for team in battle['battle']['teams']:
-                for player in team:
-                    tag = player['tag']
-                    if tag not in exclusion_list:
-                        tags.append(tag)
-        except Exception:
-            continue
-    return list(set(tags))
 
 ########################
 # NEW HELPER FUNCTION
@@ -325,10 +329,15 @@ def build_clean_row(
 
     return tuple(out)
 
-def insert_rows_matches_in_chunks(db_path: str, rows: list[tuple[Any, ...]], chunksize: int = 10000) -> None:
-    """Bulk insert tuples into matches using fixed 40-column INSERT order."""
+def insert_rows_matches_in_chunks(db_path: str, rows: list[tuple[Any, ...]], chunksize: int = 10000) -> int:
+    """Bulk insert into matches; return the number of rows actually inserted.
+
+    Writes use INSERT OR IGNORE, so attempted and inserted diverge sharply once
+    the database is warm. total_changes measures the latter, which is the only
+    figure that says whether the requests were worth making.
+    """
     if not rows:
-        return
+        return 0
     # Ensure parent directory exists for the SQLite file path
     try:
         parent_dir = os.path.dirname(os.path.abspath(db_path))
@@ -342,10 +351,12 @@ def insert_rows_matches_in_chunks(db_path: str, rows: list[tuple[Any, ...]], chu
     try:
         create_matches_table_if_not_exists(conn)
         insert_sql = get_matches_insert_statement()
+        before = conn.total_changes
         for i in range(0, len(rows), chunksize):
             chunk = rows[i:i+chunksize]
             conn.executemany(insert_sql, chunk)
             conn.commit()
+        return conn.total_changes - before
     finally:
         conn.close()
 
@@ -411,7 +422,21 @@ def process_game(game, perspective_tag, latest_runtime, player_data_cache, fetch
 # ASYNC API FUNCTIONS
 ########################
 
-async def fetch_json_async(url, headers, session, semaphore, retries=3, delay=.005, rate_limiter: AsyncRateLimiter | None = None):
+async def fetch_json_async(
+    url, headers, session, semaphore, retries=3, delay=.005,
+    rate_limiter: AsyncRateLimiter | None = None,
+    stats: CrawlStats | None = None,
+):
+    """Fetch one JSON document, recording how it went.
+
+    Returns the decoded body, None if the request was made and yielded nothing
+    usable, or BUDGET_SKIP if no request was made because the budget is spent.
+    Distinguishing the last two is what lets a bounded run put unvisited tags
+    back on the frontier instead of silently dropping them.
+    """
+    if stats is not None and stats.should_stop() is not None:
+        return BUDGET_SKIP
+
     async with semaphore:
         for _ in range(retries):
             await asyncio.sleep(delay)
@@ -420,46 +445,56 @@ async def fetch_json_async(url, headers, session, semaphore, retries=3, delay=.0
                     await rate_limiter.acquire()
                 async with session.get(url, headers=headers) as response:
                     if response.status == 200:
+                        if stats is not None:
+                            stats.record_request(Outcome.OK)
                         return await response.json()
                     elif response.status == 429:
+                        if stats is not None:
+                            stats.record_request(Outcome.RATE_LIMITED)
                         try:
                             retry_after = float(response.headers.get("Retry-After", 0.5))
                         except Exception:
                             retry_after = 0.5
                         retry_after = max(0.5, retry_after)
-                        # print(f"Rate limited (429). Retrying after {retry_after}s")
+                        # Pause every worker, not just this one: the API has
+                        # asked for quiet, and the rest are about to be told so.
                         if rate_limiter is not None:
                             rate_limiter.trigger_backoff(retry_after)
                         await asyncio.sleep(retry_after)
                     else:
-                        # 404 or other HTTP errors
-                        # We'll let it print, but we won't fail the entire process
                         text = await response.text()
+                        not_found = False
                         try:
-                            data = json.loads(text)
-                            # Check if reason is present and if it's not 'notFound'
-                            if data.get('reason') != 'notFound':
-                                print(f"HTTP {response.status}: {text}")
+                            not_found = json.loads(text).get("reason") == "notFound"
                         except json.JSONDecodeError:
-                            # If it can't be decoded as JSON, just print it
-                            print(f"HTTP {response.status}: {text}")
+                            pass
+                        if stats is not None:
+                            stats.record_request(
+                                Outcome.NOT_FOUND if not_found else Outcome.ERROR
+                            )
+                        if not_found:
+                            # A tag with no accessible profile. Expected and common.
+                            return None
+                        print(f"HTTP {response.status}: {text}")
                         await asyncio.sleep(1)
             except Exception as e:
+                if stats is not None:
+                    stats.record_request(Outcome.ERROR)
                 print(f"Exception fetching {url}: {e}")
                 await asyncio.sleep(1)
     return None
 
-async def fetch_battle_log_async(player_tag, api_key, session, semaphore, rate_limiter: AsyncRateLimiter | None = None):
+async def fetch_battle_log_async(player_tag, api_key, session, semaphore, rate_limiter: AsyncRateLimiter | None = None, stats: CrawlStats | None = None):
     headers = {'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'Authorization': f'Bearer {api_key}'}
     encoded_tag = urllib.parse.quote(player_tag)
     url = f'https://api.brawlstars.com/v1/players/{encoded_tag}/battlelog'
-    return await fetch_json_async(url, headers, session, semaphore, rate_limiter=rate_limiter)
+    return await fetch_json_async(url, headers, session, semaphore, rate_limiter=rate_limiter, stats=stats)
 
-async def fetch_player_info_async(player_tag, api_key, session, semaphore, rate_limiter: AsyncRateLimiter | None = None):
+async def fetch_player_info_async(player_tag, api_key, session, semaphore, rate_limiter: AsyncRateLimiter | None = None, stats: CrawlStats | None = None):
     headers = {'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'Authorization': f'Bearer {api_key}'}
     encoded_tag = urllib.parse.quote(player_tag)
     url = f'https://api.brawlstars.com/v1/players/{encoded_tag}'
-    return await fetch_json_async(url, headers, session, semaphore, rate_limiter=rate_limiter)
+    return await fetch_json_async(url, headers, session, semaphore, rate_limiter=rate_limiter, stats=stats)
 
 def getUpdatedIP(api_key):
     import requests
@@ -490,10 +525,11 @@ def _build_clean_rows_from_logs(
     fetch_player_data: bool,
     elo_game_min,
     elo_game_max,
+    stats: CrawlStats | None = None,
 ) -> list:
     rows = []
     for t in logs_dict:
-        for g in group_ranked_matches(logs_dict[t]):
+        for g in group_ranked_matches(logs_dict[t], stats):
             row = build_clean_row(
                 g, t, latest_runtime, player_info_cache,
                 fetch_player_data, elo_game_min, elo_game_max,
@@ -520,32 +556,61 @@ async def process_tags_and_write_async(
     requests_per_second: float = 5.0,
     fetched_tags_ttl_hours: float = 0.0,
     flush_every_n_batches: int = 0,
-):
-    """
-    Depth-limited BFS on 'soloRanked' matches:
-      - Enqueue policy (queue gating): Only enqueue tags whose observed elo
-        falls within [elo_queue_min, elo_queue_max] when provided.
-      - Build policy (game gating): Only persist ranked games whose avg elo
-        falls within [elo_game_min, elo_game_max] when provided.
-      - If fetch_player_data=True, fetch player info for all discovered tags
-        (so no null fields). Otherwise, set player columns to None.
-      - If prefilter_initial_tags=True and elo_queue_* provided, initial
-        player_tags are filtered via the player info endpoint before BFS.
-    """
+    budget: RunBudget | None = None,
+    resume: bool = True,
+    record_run: bool = True,
+) -> CrawlStats:
+    """Depth-limited BFS over ranked battle logs, bounded by `budget`.
 
-    # Validate ranges
+    Enqueue policy: follow a discovered player only if their observed elo falls
+    in [elo_queue_min, elo_queue_max]. Build policy: keep a set only if its
+    average elo falls in [elo_game_min, elo_game_max]. These are deliberately
+    separate — see docs/DESIGN.md.
+
+    The run resumes from and writes back a persistent frontier, so a sequence of
+    short bounded runs behaves as one long crawl. Returns the run's CrawlStats.
+    """
     _validate_range(elo_queue_min, elo_queue_max, "elo_queue range")
     _validate_range(elo_game_min, elo_game_max, "elo_game range")
 
-    # No raw path; clean DB table is created on insert
+    stats = CrawlStats(budget=budget or RunBudget())
+    stop_reason: StopReason | None = None
+    status = "failed"
+    queue: deque = deque()
+    requeue: list[tuple[str, int]] = []
 
-    # BFS Data
-    logs_dict = {}
-    discovered_tags_set = set()
-    visited_tags = set()
+    pending: list[tuple[str, int]] = []
+    if resume and clean_db_path:
+        pending = load_frontier(clean_db_path)
+
+    run_id = None
+    if clean_db_path and record_run:
+        run_id = start_run(
+            clean_db_path,
+            {
+                "seed_tags": len(player_tags),
+                "max_depth": max_depth,
+                "batch_size": batch_size,
+                "concurrency": concurrency,
+                "requests_per_second": requests_per_second,
+                "fetch_player_data": fetch_player_data,
+                "elo_queue": [elo_queue_min, elo_queue_max],
+                "elo_game": [elo_game_min, elo_game_max],
+                "fetched_tags_ttl_hours": fetched_tags_ttl_hours,
+                "flush_every_n_batches": flush_every_n_batches,
+                "budget": vars(stats.budget),
+                "resumed_frontier": len(pending),
+            },
+            frontier_before=len(pending),
+        )
+
+    logs_dict: dict = {}
+    discovered_tags_set: set = set()
+    visited_tags: set = set()
     _batch_count = 0
 
-    # Pre-load recently-fetched tags so BFS skips them across runs (Fix 1D)
+    # Skip tags fetched recently enough that their 25-battle window has not
+    # meaningfully turned over.
     if fetched_tags_ttl_hours > 0.0 and clean_db_path and os.path.exists(clean_db_path):
         from datetime import timedelta
         _cutoff = (datetime.now(UTC) - timedelta(hours=fetched_tags_ttl_hours)).isoformat()
@@ -554,160 +619,186 @@ async def process_tags_and_write_async(
             _preload_conn.execute(
                 "CREATE TABLE IF NOT EXISTS fetched_tags (tag TEXT PRIMARY KEY, fetched_utc TEXT NOT NULL)"
             )
-            _preload_rows = _preload_conn.execute(
-                "SELECT tag FROM fetched_tags WHERE fetched_utc >= ?", (_cutoff,)
-            ).fetchall()
-            visited_tags.update(r[0] for r in _preload_rows)
+            visited_tags.update(
+                r[0] for r in _preload_conn.execute(
+                    "SELECT tag FROM fetched_tags WHERE fetched_utc >= ?", (_cutoff,)
+                )
+            )
         except Exception:
             pass
         finally:
             _preload_conn.close()
+
+    async def _flush_logs() -> None:
+        """Write accumulated logs as rows and release the buffer."""
+        nonlocal logs_dict
+        if not logs_dict:
+            return
+        rows = _build_clean_rows_from_logs(
+            logs_dict, latest_runtime, {}, False, elo_game_min, elo_game_max, stats
+        )
+        if rows and clean_db_path:
+            inserted = await asyncio.to_thread(
+                insert_rows_matches_in_chunks, clean_db_path, rows, 10000
+            )
+            stats.record_rows(inserted)
+        if fetched_tags_ttl_hours > 0.0 and clean_db_path:
+            _now = datetime.now(UTC).isoformat()
+            os.makedirs(os.path.dirname(os.path.abspath(clean_db_path)), exist_ok=True)
+            _c = sqlite3.connect(clean_db_path)
+            try:
+                create_fetched_tags_table_if_not_exists(_c)
+                upsert_fetched_tags(_c, list(logs_dict.keys()), _now)
+            finally:
+                _c.close()
+        logs_dict = {}
 
     semaphore = asyncio.Semaphore(concurrency)
     rate_limiter = AsyncRateLimiter(requests_per_second=requests_per_second)
     connector = aiohttp.TCPConnector(limit=concurrency, limit_per_host=concurrency, ttl_dns_cache=300)
     timeout = aiohttp.ClientTimeout(total=30)
 
-    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+    try:
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            initial_tags = list(player_tags)
+            player_info_cache: dict = {}
 
-        # Optionally prefilter initial tags by elo using player info
-        initial_tags = list(player_tags)
-        player_info_cache = {}
-        if prefilter_initial_tags and (elo_queue_min is not None or elo_queue_max is not None):
-            coros = [fetch_player_info_async(t, api_key, session, semaphore, rate_limiter) for t in initial_tags]
-            infos = await asyncio.gather(*coros)
-            filtered = []
-            for t, info_json in zip(initial_tags, infos, strict=True):
-                if info_json:
+            if prefilter_initial_tags and (elo_queue_min is not None or elo_queue_max is not None):
+                infos = await asyncio.gather(*[
+                    fetch_player_info_async(t, api_key, session, semaphore, rate_limiter, stats)
+                    for t in initial_tags
+                ])
+                filtered = []
+                for t, info_json in zip(initial_tags, infos, strict=True):
+                    if not info_json or info_json is BUDGET_SKIP:
+                        continue
                     player_info_cache[t] = info_json
                     try:
-                        brawlers = info_json.get('brawlers', [])
-                        in_range = any(_is_elo_in_range(b.get('trophies'), elo_queue_min, elo_queue_max) for b in brawlers)
+                        in_range = any(
+                            _is_elo_in_range(b.get("trophies"), elo_queue_min, elo_queue_max)
+                            for b in info_json.get("brawlers", [])
+                        )
                     except Exception:
                         in_range = False
                     if in_range:
                         filtered.append(t)
-            initial_tags = filtered
+                initial_tags = filtered
 
-        # Prepare BFS queue and de-dup trackers
-        queue = deque((t, 0) for t in initial_tags)
-        enqueued = set(initial_tags)
+            # Resumed frontier first, then any new seeds not already pending.
+            queue = deque(pending)
+            enqueued = {t for t, _ in pending}
+            for t in initial_tags:
+                if t not in enqueued:
+                    queue.append((t, 0))
+                    enqueued.add(t)
 
-        # PROGRESS BAR: BFS logs
-        pbar_bfs = tqdm(desc="BFS: fetching logs", total=0, dynamic_ncols=True)
+            pbar_bfs = tqdm(desc="BFS: fetching logs", total=0, dynamic_ncols=True)
 
-        while queue:
-            # Build a batch
-            batch = []
-            while queue and len(batch) < batch_size:
-                item = queue.popleft()
-                batch.append(item)
+            while queue:
+                stop_reason = stats.should_stop()
+                if stop_reason is not None:
+                    break
 
-            # Filter out already-fetched tags
-            tasks = []
-            for (tag, depth) in batch:
-                if tag not in visited_tags:
-                    visited_tags.add(tag)
-                    tasks.append((tag, depth))
+                batch = []
+                while queue and len(batch) < batch_size:
+                    batch.append(queue.popleft())
 
-            if not tasks:
-                continue
+                tasks = []
+                for (tag, depth) in batch:
+                    if tag not in visited_tags:
+                        visited_tags.add(tag)
+                        tasks.append((tag, depth))
+                if not tasks:
+                    continue
 
-            # Fetch logs in parallel
-            fetch_coros = [
-                fetch_battle_log_async(t, api_key, session, semaphore, rate_limiter)
-                for (t, _) in tasks
-            ]
-            results = await asyncio.gather(*fetch_coros)
+                results = await asyncio.gather(*[
+                    fetch_battle_log_async(t, api_key, session, semaphore, rate_limiter, stats)
+                    for (t, _) in tasks
+                ])
 
-            # Process each log
-            for (tag, depth), battle_log in zip(tasks, results, strict=True):
-                if battle_log:
-                    logs_dict[tag] = battle_log
+                for (tag, depth), battle_log in zip(tasks, results, strict=True):
+                    if battle_log is BUDGET_SKIP:
+                        # No request was made. Put it back rather than lose it.
+                        visited_tags.discard(tag)
+                        requeue.append((tag, depth))
+                        continue
+                    if battle_log:
+                        logs_dict[tag] = battle_log
+                        for nt, elo_val in get_all_solo_ranked_tags_with_elos(battle_log):
+                            discovered_tags_set.add(nt)
+                            if depth < max_depth and _is_elo_in_range(elo_val, elo_queue_min, elo_queue_max):
+                                if nt not in visited_tags and nt not in enqueued:
+                                    queue.append((nt, depth + 1))
+                                    enqueued.add(nt)
 
-                    # Gather player tags with elos from 'soloRanked' matches
-                    new_pairs = get_all_solo_ranked_tags_with_elos(battle_log)
-                    for nt, elo_val in new_pairs:
-                        discovered_tags_set.add(nt)
-                        # BFS expansion only if depth < max_depth and queue elo matches range
-                        if depth < max_depth and _is_elo_in_range(elo_val, elo_queue_min, elo_queue_max):
-                            if nt not in visited_tags and nt not in enqueued:
-                                queue.append((nt, depth + 1))
-                                enqueued.add(nt)
+                pbar_bfs.update(len(tasks))
+                _batch_count += 1
 
-            pbar_bfs.update(len(tasks))
-            _batch_count += 1
+                if (
+                    flush_every_n_batches > 0
+                    and not fetch_player_data
+                    and _batch_count % flush_every_n_batches == 0
+                ):
+                    await _flush_logs()
+            else:
+                stop_reason = StopReason.FRONTIER_EXHAUSTED
 
-            # Incremental flush: write accumulated rows to DB and free memory (Fix 2D)
-            # Only runs when fetch_player_data=False; player info isn't available mid-BFS.
-            if (
-                flush_every_n_batches > 0
-                and not fetch_player_data
-                and _batch_count % flush_every_n_batches == 0
-                and logs_dict
-            ):
-                _flush_rows = _build_clean_rows_from_logs(
-                    logs_dict, latest_runtime, {}, False, elo_game_min, elo_game_max
-                )
-                if _flush_rows and clean_db_path:
-                    await asyncio.to_thread(
-                        insert_rows_matches_in_chunks, clean_db_path, _flush_rows, 10000
-                    )
-                if fetched_tags_ttl_hours > 0.0 and clean_db_path:
-                    _now_utc = datetime.now(UTC).isoformat()
-                    os.makedirs(os.path.dirname(os.path.abspath(clean_db_path)), exist_ok=True)
-                    _mid_conn = sqlite3.connect(clean_db_path)
-                    try:
-                        create_fetched_tags_table_if_not_exists(_mid_conn)
-                        upsert_fetched_tags(_mid_conn, list(logs_dict.keys()), _now_utc)
-                    finally:
-                        _mid_conn.close()
-                logs_dict.clear()
+            pbar_bfs.close()
 
-        pbar_bfs.close()
+            if fetch_player_data:
+                to_fetch = [t for t in discovered_tags_set if t not in player_info_cache]
+                pbar_info = tqdm(total=len(to_fetch), desc="Fetching player info", dynamic_ncols=True)
+                results_info = await asyncio.gather(*[
+                    fetch_player_info_async(t, api_key, session, semaphore, rate_limiter, stats)
+                    for t in to_fetch
+                ])
+                for t, info_json in zip(to_fetch, results_info, strict=True):
+                    if info_json and info_json is not BUDGET_SKIP:
+                        player_info_cache[t] = info_json
+                pbar_info.update(len(to_fetch))
+                pbar_info.close()
 
-        # 2) (OPTIONAL) Fetch player info reusing the same session (Fix 2E, 2B)
-        if fetch_player_data:
-            to_fetch = [t for t in discovered_tags_set if t not in player_info_cache]
-            pbar_info = tqdm(total=len(to_fetch), desc="Fetching player info", dynamic_ncols=True)
-            tasks_info = [
-                fetch_player_info_async(t, api_key, session, semaphore, rate_limiter)
-                for t in to_fetch
-            ]
-            results_info = await asyncio.gather(*tasks_info)
-            for t, info_json in zip(to_fetch, results_info, strict=True):
-                if info_json:
-                    player_info_cache[t] = info_json
-            pbar_info.update(len(to_fetch))
-            pbar_info.close()
+        if fetched_tags_ttl_hours > 0.0 and clean_db_path and visited_tags:
+            _now = datetime.now(UTC).isoformat()
+            os.makedirs(os.path.dirname(os.path.abspath(clean_db_path)), exist_ok=True)
+            _c = sqlite3.connect(clean_db_path)
+            try:
+                create_fetched_tags_table_if_not_exists(_c)
+                upsert_fetched_tags(_c, list(visited_tags), _now)
+            finally:
+                _c.close()
 
-    # Persist fetched tags so future runs can skip them (Fix 1A)
-    if fetched_tags_ttl_hours > 0.0 and clean_db_path and visited_tags:
-        _now_utc = datetime.now(UTC).isoformat()
-        os.makedirs(os.path.dirname(os.path.abspath(clean_db_path)), exist_ok=True)
-        _persist_conn = sqlite3.connect(clean_db_path)
-        try:
-            create_fetched_tags_table_if_not_exists(_persist_conn)
-            upsert_fetched_tags(_persist_conn, list(visited_tags), _now_utc)
-        finally:
-            _persist_conn.close()
-
-    # 3-4) Build rows from remaining logs and write to DB
-    clean_rows: list = []
-    try:
         clean_rows = _build_clean_rows_from_logs(
-            logs_dict, latest_runtime, player_info_cache, fetch_player_data, elo_game_min, elo_game_max
+            logs_dict, latest_runtime, player_info_cache, fetch_player_data,
+            elo_game_min, elo_game_max, stats,
         )
-    finally:
-        # Always attempt the write even if row-building raises
         if clean_db_path and clean_rows:
-            await asyncio.to_thread(
-                insert_rows_matches_in_chunks,
-                clean_db_path,
-                clean_rows,
-                10000,
+            inserted = await asyncio.to_thread(
+                insert_rows_matches_in_chunks, clean_db_path, clean_rows, 10000
             )
+            stats.record_rows(inserted)
+        status = "ok"
 
-########################
-# No raw utilities remain
-########################
+    except BaseException:
+        stop_reason = StopReason.FAILED
+        raise
+    finally:
+        remaining = requeue + list(queue)
+        if clean_db_path:
+            try:
+                save_frontier(clean_db_path, remaining)
+            except Exception as e:
+                print(f"Could not save frontier: {e}")
+            if run_id is not None:
+                try:
+                    finish_run(
+                        clean_db_path, run_id,
+                        status=status,
+                        stop_reason=None if stop_reason is None else str(stop_reason),
+                        stats=stats.summary(),
+                        frontier_after=len(remaining),
+                    )
+                except Exception as e:
+                    print(f"Could not record run: {e}")
+
+    return stats

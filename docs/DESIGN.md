@@ -137,15 +137,61 @@ name stays stable; a material change to the method bumps the version recorded in
 metadata rather than renaming the column, so downstream code does not break and
 old data stays interpretable.
 
+## A scheduled run has to end by itself
+
+A crawl used to run until the frontier emptied, which on this graph is
+effectively never. That is fine when a person is watching and can press Ctrl-C.
+It is not fine on a schedule, where the run shares a fixed CI window with a
+short-lived API key that gets revoked on the way out.
+
+Three things end a run, and it records which one did:
+
+- **Request budget** — a hard ceiling on API calls, so cost is predictable.
+- **Time budget** — wall clock, so the run fits its window.
+- **Yield collapse** — the interesting one. Rows inserted per 1000 requests is
+  measured over a trailing window, and the run stops when it falls below a
+  floor. Because BFS neighborhoods saturate, this is usually what fires first:
+  it ends the crawl at the point where it stopped being worth continuing,
+  rather than at an arbitrary count.
+
+Yield is measured on rows *actually inserted*, which `INSERT OR IGNORE` makes
+very different from rows attempted once the database is warm. Measuring
+attempts would show a healthy crawl right up until the disk stopped changing.
+
+The budget is enforced at the request layer, not just between batches, so a
+large in-flight batch cannot overshoot it. A request declined for budget returns
+a distinct sentinel rather than `None`: `None` means the request happened and
+found nothing, whereas a declined tag was never asked about and has to go back
+on the frontier. Conflating them would silently drop a slice of the frontier on
+every bounded run.
+
+## Stopping early only helps if the next run continues
+
+Bounding a run is pointless if the next one starts over. When a run stops, the
+unvisited frontier — every tag discovered but not yet fetched — is written to a
+`crawl_frontier` table in the season database, and the next run loads it before
+consulting its seed tags. Pending tags are restored shallowest-first, so
+resuming continues the breadth-first sweep rather than diving into whatever
+happened to be deepest when the clock ran out.
+
+This is what makes frequent small runs equivalent to one long crawl, which is
+the whole premise of running on a schedule.
+
+Every run also writes a row to `pipeline_runs`: its configuration, how it
+stopped, requests made, rows inserted, HTTP outcomes broken out by kind, parse
+failures, and frontier size before and after. The row is written as `running`
+before the first request and updated on the way out, so a process that dies
+leaves evidence rather than nothing.
+
 ## Known limitations
 
-- **Failed fetches are indistinguishable from empty ones.** After three retries
-  `fetch_json_async` returns `None`, which reads the same as a player with no
-  ranked games. Runs cannot currently report what fraction of the frontier was
-  actually lost.
-- **Parse failures are silent.** Malformed battles are skipped without being
-  counted, so a systematic upstream change could shrink yield unnoticed.
-- **The crawl is unbounded.** Nothing stops a run at a request budget or when
-  new-row yield collapses; it runs until the frontier empties.
 - **Draft order is unrecoverable.** The API returns the six final brawlers with
   no bans and no pick sequence. Sequence-dependent modeling has to infer it.
+- **Seeding is still manual.** A new season starts from hand-supplied tags or a
+  sample of an old season's star players; nothing picks them automatically.
+- **Yield collapse is global, not per-neighborhood.** The crawl stops when
+  overall yield falls, but cannot currently redirect toward a more productive
+  region of the graph instead.
+- **Retry exhaustion still reads as an empty response.** Outcomes are now
+  counted, so a run reports how many requests errored — but a tag whose three
+  attempts all failed is not individually re-queued.
