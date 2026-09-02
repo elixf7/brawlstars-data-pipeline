@@ -15,11 +15,16 @@ classifiers = [
 
 dependencies = [
     "aiohttp>=3.9.5",
+    "pyarrow>=17.0",
     "requests>=2.32.3",
     "tqdm>=4.66.4",
 ]
 
 [project.optional-dependencies]
+# Publishing to the Hugging Face Hub. Not needed to run the pipeline.
+hub = [
+    "huggingface-hub>=0.25",
+]
 # Exploration only. The pipeline itself does not import pandas.
 notebook = [
     "pandas>=2.2.2",
@@ -30,6 +35,8 @@ notebook = [
 [project.scripts]
 bsetl-ingest = "bsetl.cli.ingest:main"
 bsetl-key = "bsetl.cli.key:main"
+bsetl-export = "bsetl.cli.export:main"
+bsetl-publish = "bsetl.cli.publish:main"
 bsetl-queue = "bsetl.cli.queue:main"
 bsetl-skill-features = "bsetl.cli.skill_features:main"
 

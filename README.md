@@ -11,9 +11,8 @@ league-wide elo drift that makes raw elo incomparable across a season.
 
 Roughly 2.7M ranked sets per season, ~600MB per database.
 
-> **Status.** The extraction, schema, and skill-feature stages are complete and in
-> use. Scheduled execution, the quality gate, and dataset publishing are being
-> built out.
+> **Status.** Extraction, schema, the skill feature, and dataset publishing are
+> complete and in use. The quality gate and scheduled execution are being built out.
 
 ## How it fits together
 
@@ -99,6 +98,22 @@ plus a `skill_bin_metadata` audit table recording each bin's sample count and co
 
 ```bash
 uv run bsetl-skill-features --clean-db-path data/seasons/season50/v1.db --bin-width-days 3 --min-bin-count 100000 --mapping logit
+```
+
+**Publish it.** Projects `matches` into Parquet partitioned by day, writes a dataset
+card and metadata sidecar from the same numbers, and optionally emits a SQLite copy
+with pipeline state stripped for consumers that expect one.
+
+```bash
+uv run bsetl-export --clean-db-path data/seasons/season50/v1.db --out-dir data/exports/season50 --repo-id you/brawlstars-ranked --with-sqlite
+```
+
+On season42 that is 2,720,934 rows into 27 daily files — **66 MB from 623 MB, 9.4x
+smaller** — in about a minute. Uploading needs `uv sync --extra hub` and `HF_TOKEN`;
+without `--yes` it only reports what it would do.
+
+```bash
+uv run bsetl-publish --local-dir data/exports/season50 --repo-id you/brawlstars-ranked --yes
 ```
 
 Then explore what landed with [`notebooks/explore_season.ipynb`](notebooks/explore_season.ipynb)

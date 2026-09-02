@@ -215,6 +215,38 @@ The key is never rendered. `ProvisionedKey.__repr__` redacts it, because the
 realistic leak is not someone printing it deliberately — it is a traceback, a
 debug log, or a CI transcript that happens to include an object.
 
+## SQLite to work in, Parquet to hand out
+
+These are different jobs, and one format does not do both well.
+
+The crawl needs a transactional store with a unique constraint. Idempotent
+re-crawling depends entirely on `INSERT OR IGNORE` against the unique index, and
+the frontier, fetched-tag ledger, and run history need to commit atomically
+alongside the rows they describe. Parquet offers none of that: no uniqueness, no
+transactions, no in-place update, which the skill feature also needs when it
+backfills `skill_ns`. Writing Parquet directly from the crawler would mean
+reimplementing deduplication by hand and splitting operational state into a
+second store.
+
+Publishing has the opposite requirements. Nobody consuming this wants a
+600 MB file they must have a SQLite driver to open, and nearly every consumer
+reads a subset — a date range, a few columns. So the export projects `matches`
+into Parquet partitioned by day, which on season42 is 2.7M rows in 66 MB rather
+than 623 MB, a factor of 9.4, with a day readable without touching the rest.
+
+Two details make the exported files safe to combine across seasons. The Arrow
+schema is built from SQLite's *declared* column types rather than inferred from
+the data, because a column that happens to be entirely NULL in one season would
+otherwise be typed `null` and refuse to concatenate with a season where it is
+populated. And one writer is held open per day across read batches, so a day
+spanning a batch boundary lands in one file instead of fragmenting.
+
+The export is a projection, not a move. It carries `matches` and the
+skill-feature provenance and leaves the operational tables behind — they say
+nothing about the game and everything about our crawl. `bsetl-export
+--with-sqlite` produces the same projection as a SQLite file, vacuumed, for
+consumers that already expect one.
+
 ## A run has to account for itself
 
 Nobody watches a scheduled run, so its log is the only account of what happened.

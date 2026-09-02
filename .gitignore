@@ -14,7 +14,8 @@ local_secrets.py
 # Season databases and their generated sidecars are pipeline output,
 # not source. See data/README.md.
 # ---------------------------------------------------------------
-data/seasons/
+data/*
+!data/README.md
 *.db
 *.db-wal
 *.db-shm

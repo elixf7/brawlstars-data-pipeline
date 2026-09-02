@@ -17,6 +17,20 @@ Create a season by pointing the CLI at a path under here:
 uv run bsetl-ingest --tags '#9UUU9QVU' --clean-db-path data/seasons/season50/v1.db
 ```
 
+Exports built for publication land beside them:
+
+```
+data/exports/<season>/
+    README.md                      generated dataset card
+    metadata.json                  season summary plus export stats
+    data/battle_date=YYYY-MM-DD/   Parquet, one file per day
+    <season>.db                    optional SQLite copy, pipeline state stripped
+```
+
+```bash
+uv run bsetl-export --clean-db-path data/seasons/season50/v1.db --out-dir data/exports/season50
+```
+
 Schema reference is in [`docs/DATA_DICTIONARY.md`](../docs/DATA_DICTIONARY.md).
 Published datasets are the distribution channel for the data itself; this
 directory is a local working area.
