@@ -29,6 +29,7 @@ notebook = [
 
 [project.scripts]
 bsetl-ingest = "bsetl.cli.ingest:main"
+bsetl-key = "bsetl.cli.key:main"
 bsetl-queue = "bsetl.cli.queue:main"
 bsetl-skill-features = "bsetl.cli.skill_features:main"
 

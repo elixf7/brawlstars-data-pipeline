@@ -183,6 +183,38 @@ failures, and frontier size before and after. The row is written as `running`
 before the first request and updated on the way out, so a process that dies
 leaves evidence rather than nothing.
 
+## The key cannot be stored
+
+Supercell keys are CIDR-locked — the permitted address is baked into the token
+itself. A key minted at home returns 403 from a CI runner, whose address is
+neither known ahead of time nor stable between runs. So the usual arrangement,
+a long-lived key held as a repository secret, cannot work here at all.
+
+What is stored instead is a *credential*. At the start of a run the pipeline
+signs in to the developer portal, mints a key scoped to whatever address it is
+calling from, uses it, and revokes it in a `finally` block. The key exists for
+one run, never touches disk, and is worthless to anyone who obtains it from
+anywhere else.
+
+The caller's address comes from the login response itself, which returns a
+`temporaryAPIToken` whose JWT payload carries the CIDR the portal observed.
+Asking a third-party IP-echo service would introduce an outside dependency in
+the authentication path and could disagree with what the portal actually sees
+behind egress NAT. The CIDR is located by searching the `limits` array for the
+entry that has one rather than by index, since the order is not guaranteed.
+
+Two failure modes get explicit handling. The portal caps an account at ten
+keys, and a run killed between minting and revoking leaks one; a handful of
+crashes would wedge the pipeline until someone cleared keys by hand. So each
+run first sweeps keys carrying the managed name prefix, which are by definition
+disposable, before minting its own. `bsetl-key sweep` does the same on demand.
+That sweep assumes one pipeline per prefix — concurrent runs sharing a prefix
+would revoke each other's keys, so they need distinct ones.
+
+The key is never rendered. `ProvisionedKey.__repr__` redacts it, because the
+realistic leak is not someone printing it deliberately — it is a traceback, a
+debug log, or a CI transcript that happens to include an object.
+
 ## Known limitations
 
 - **Draft order is unrecoverable.** The API returns the six final brawlers with

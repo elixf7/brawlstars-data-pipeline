@@ -127,10 +127,26 @@ Only `soloRanked` battles are ingested. More in
 The repository stores no credentials. There is exactly one way to supply a key
 locally: the `BS_API_KEY` environment variable.
 
-Automated runs never use a stored key at all. The scheduled job signs in to the
-developer portal with credentials held as repository secrets, mints a key scoped to
-the runner's own IP, and revokes it when the run ends — so no long-lived key exists
-to leak.
+Automated runs use no stored key at all. Keys are CIDR-locked — the permitted
+address is inside the token — so a key made anywhere else is useless on a CI runner
+whose address changes between runs. Instead the run signs in to the developer portal
+with credentials held as repository secrets, mints a key scoped to the address it is
+actually calling from, and revokes it in a `finally` block. The key lives for one run
+and never touches disk.
+
+```bash
+export BS_DEV_EMAIL="you@example.com" BS_DEV_PASSWORD="..."
+
+uv run bsetl-key check     # mint, verify, revoke — proves credentials work
+uv run bsetl-key list      # existing keys and how this host appears
+uv run bsetl-key sweep     # reclaim keys left by runs that died mid-flight
+
+# and for a crawl:
+uv run bsetl-ingest --provision-key --clean-db-path data/seasons/season50/v1.db --max-requests 20000
+```
+
+Key material is never printed by any of these — only key ids, names, and the host
+address.
 
 - Never pass a key as a command-line argument; it lands in shell history and the
   process table. Both CLIs read it from the environment, and child processes inherit

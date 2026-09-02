@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -85,8 +86,13 @@ def main() -> None:
     b.add_argument("--no-resume", action="store_true",
                    help="Ignore the stored frontier and start from seeds only")
 
+    p.add_argument("--provision-key", action="store_true",
+                   help="Mint a short-lived API key scoped to this host's IP from "
+                        "the developer portal, and revoke it when the run ends. "
+                        "Reads BS_DEV_EMAIL and BS_DEV_PASSWORD instead of BS_API_KEY. "
+                        "This is how scheduled runs authenticate.")
+
     args = p.parse_args()
-    api_key = get_api_key()  # BS_API_KEY (or BRAWLSTARS_API_KEY) from the environment
     tags = parse_tags(args.tags, args.tags_file)
     resuming = not args.no_resume and Path(args.clean_db_path).exists()
     if not tags and not resuming:
@@ -101,7 +107,7 @@ def main() -> None:
         yield_window_requests=args.yield_window_requests,
     )
 
-    async def _run():
+    async def _run(api_key: str):
         return await process_tags_and_write_async(
             player_tags=tags,
             api_key=api_key,
@@ -123,7 +129,24 @@ def main() -> None:
             resume=not args.no_resume,
         )
 
-    stats = asyncio.run(_run())
+    # Either mint a key for this host and revoke it on the way out, or use the
+    # one already in the environment. The key is held only for the run.
+    if args.provision_key:
+        from bsetl.ingest.keyprovision import PortalError, ephemeral_key
+
+        try:
+            key_source = ephemeral_key()
+        except PortalError as e:
+            raise SystemExit(f"error: {e}") from None
+    else:
+        key_source = contextlib.nullcontext(get_api_key())
+
+    with key_source as provisioned:
+        api_key = provisioned.key if args.provision_key else provisioned
+        if args.provision_key:
+            print(f"Provisioned key {provisioned.key_id} for {provisioned.ip}")
+        stats = asyncio.run(_run(api_key))
+
     print(json.dumps(stats.summary(), indent=2))
 
 
