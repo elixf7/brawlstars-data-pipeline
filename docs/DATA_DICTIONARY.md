@@ -2,6 +2,8 @@
 
 This document describes the analysis-ready SQLite schema produced under `data/seasons/`. It is designed to be stable across seasons and to serve as a reference for both current and future datasets.
 
+For why the schema looks like this, see [DESIGN.md](DESIGN.md). For what the values mean in terms of the game, see [DOMAIN.md](DOMAIN.md).
+
 - Source build orchestration: the `bsetl-ingest` and `bsetl-queue` commands (see the README).
 - Core schema definition: `src/bsetl/transform/schema.py`.
 - Time-local ECDF skill feature: the `bsetl-skill-features` command, with config in `src/bsetl/transform/skill_config.py` and helpers in `src/bsetl/transform/skill_features.py`.

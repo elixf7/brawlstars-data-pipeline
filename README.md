@@ -13,7 +13,7 @@ Roughly 2.7M ranked sets per season, ~600MB per database.
 
 > **Status.** The extraction, schema, and skill-feature stages are complete and in
 > use. Scheduled execution, the quality gate, and dataset publishing are being
-> built out — see [`docs/design/`](docs/design/) for the plans.
+> built out.
 
 ## How it fits together
 
@@ -81,9 +81,15 @@ Then explore what landed with [`notebooks/explore_season.ipynb`](notebooks/explo
 (`uv sync --extra notebook` first). The notebook does not run the pipeline — that is
 what the CLI is for.
 
-## What's in the data
+## Documentation
 
-Full column reference: [`docs/DATA_DICTIONARY.md`](docs/DATA_DICTIONARY.md).
+| | |
+| --- | --- |
+| [`docs/DATA_DICTIONARY.md`](docs/DATA_DICTIONARY.md) | Every column, table, and index |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | Why the pipeline is built this way, and what it can't do |
+| [`docs/DOMAIN.md`](docs/DOMAIN.md) | Enough Brawl Stars to read the data |
+
+## What's in the data
 
 One row per ranked set — up to three games on a fixed map, first team to two wins.
 Core fields cover time, mode, map, and the game-by-game record; the six drafted
@@ -96,7 +102,8 @@ so re-crawling the same players is safe and cheap.
 **Limitations worth knowing.** The API exposes only the final six brawlers — no bans
 and no pick order, so draft sequence cannot be recovered. Battle logs hold only a
 player's last ~25 battles, which sets how often re-crawling a player is worthwhile.
-Only `soloRanked` battles are ingested.
+Only `soloRanked` battles are ingested. More in
+[DESIGN.md](docs/DESIGN.md#known-limitations).
 
 ## Credentials and security
 

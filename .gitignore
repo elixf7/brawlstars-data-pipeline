@@ -10,19 +10,32 @@ local_secrets.py
 *.key
 
 # ---------------------------------------------------------------
-# Data artifacts
-# Season databases are 250MB-900MB and live in the published
-# dataset, not in git. Small committed test fixtures are exempt.
+# Operational data
+# Season databases and their generated sidecars are pipeline output,
+# not source. See data/README.md.
 # ---------------------------------------------------------------
+data/seasons/
 *.db
 *.db-wal
 *.db-shm
 *.sqlite
 *.sqlite3
 *.parquet
-!fixtures/**
+!tests/fixtures/**
 
-data_raw/
+# ---------------------------------------------------------------
+# Working notes
+# Design scratch, brainstorms, and implementation checklists kept
+# locally. Conclusions worth publishing live in docs/.
+# ---------------------------------------------------------------
+notes/
+
+# ---------------------------------------------------------------
+# Editor and assistant configuration
+# ---------------------------------------------------------------
+.cursor/
+.idea/
+.vscode/
 
 # ---------------------------------------------------------------
 # Python
@@ -44,11 +57,6 @@ dist/
 .ipynb_checkpoints/
 
 # ---------------------------------------------------------------
-# Editor / OS
+# OS
 # ---------------------------------------------------------------
 .DS_Store
-.idea/
-.vscode/
-
-# uv-managed virtualenv
-.venv/
