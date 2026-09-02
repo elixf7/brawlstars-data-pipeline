@@ -52,7 +52,7 @@ jobs:
       - run: uv sync --all-extras
       - name: Every command responds
         run: |
-          for c in bsetl-ingest bsetl-queue bsetl-key bsetl-skill-features \
+          for c in bsetl-ingest bsetl-queue bsetl-key bsetl-skill-features bsetl-season bsetl-report \
                    bsetl-check bsetl-export bsetl-publish bsetl-state; do
             echo "--- $c"
             uv run "$c" --help > /dev/null

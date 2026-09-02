@@ -27,6 +27,11 @@ concurrency:
   group: bsetl-ingest
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
 env:
   # Season is computed from the calendar, not configured. Set only to override.
   SEASON_OVERRIDE: ${{ inputs.season }}
@@ -141,6 +146,18 @@ jobs:
           uv run bsetl-state push \
             --repo-id "$DATASET_REPO" --season "$SEASON" --db-path "$DB_PATH"
 
+      # Rendered from the database itself, so the page cannot claim anything
+      # the data does not support.
+      - name: Render status page
+        if: always() && hashFiles('data/seasons/working.db') != ''
+        run: uv run bsetl-report --clean-db-path "$DB_PATH" --out-dir site
+
+      - name: Package status page
+        if: always() && hashFiles('site/index.html') != ''
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
       - name: Upload run summary
         if: always()
         uses: actions/upload-artifact@v4
@@ -149,3 +166,18 @@ jobs:
           path: run-summary.json
           if-no-files-found: ignore
           retention-days: 30
+
+  # Separate job because deployment needs the Pages environment. Requires Pages
+  # to be enabled (Settings -> Pages -> Source: GitHub Actions). On a private
+  # repository that needs a paid plan; the job is skipped harmlessly otherwise.
+  publish-status-page:
+    needs: crawl
+    if: always() && needs.crawl.result != 'cancelled'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
+        continue-on-error: true

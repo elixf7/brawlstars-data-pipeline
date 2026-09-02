@@ -21,18 +21,39 @@ Roughly 2.7M ranked sets per season, ~600MB per database.
 
 ## How it fits together
 
+```mermaid
+flowchart TD
+    API["Brawl Stars API<br/><i>~25 battles per player, no bulk endpoint</i>"]
+    KEY["keyprovision<br/><i>mint key for this IP, revoke on exit</i>"]
+    CRAWL["ingest<br/><b>async BFS over the player graph</b><br/>rate-limited · budgeted · resumable"]
+    DB[("season database<br/><i>matches + frontier + run history</i>")]
+    SKILL["transform<br/><b>skill_ns</b><br/><i>time-local ECDF of avg_elo</i>"]
+    GATE{"quality gate<br/><i>18 checks</i>"}
+    PARQ["publish<br/><b>Parquet by day</b><br/><i>9.4x smaller</i>"]
+    HUB[("Hugging Face<br/>dataset + working state")]
+    MODEL["downstream model training"]
+    PAGE["status page"]
+
+    KEY -.->|short-lived key| CRAWL
+    API --> CRAWL
+    CRAWL -->|idempotent insert| DB
+    DB --> SKILL --> DB
+    DB --> GATE
+    GATE -->|fails| STOP["nothing published"]
+    GATE -->|passes| PARQ --> HUB
+    HUB -.->|restored next run| CRAWL
+    DB --> PAGE
+    HUB --> MODEL
+
+    classDef store fill:#e8f0fe,stroke:#2d6cdf,color:#16181d
+    classDef halt fill:#fdecea,stroke:#b3261e,color:#16181d
+    class DB,HUB store
+    class STOP halt
 ```
-Brawl Stars API
-      │  async BFS over the player graph, rate-limit aware
-      ▼
-  ingest/          crawler.py · ratelimit.py
-      │  reconstructed sets, elo-gated
-      ▼
-  transform/       schema.py · skill_features.py · metadata.py
-      │  wide matches table + skill_ns + metadata sidecar
-      ▼
-  season database  ──▶  downstream model training (LogR-MCTS)
-```
+
+Runners are ephemeral, so the working database round-trips through the Hub between
+runs — that dashed edge is what makes a series of short bounded crawls behave as one
+continuous one.
 
 | Package | Holds |
 | --- | --- |
@@ -40,6 +61,7 @@ Brawl Stars API
 | `bsetl.transform` | Schema, the `skill_ns` feature, dataset metadata |
 | `bsetl.state` | Durable pipeline state — seed sampling, fetched-tag tracking |
 | `bsetl.quality` | Data quality checks that gate publication |
+| `bsetl.publish` | Parquet export, dataset card, Hub upload, status page |
 | `bsetl.cli` | Command-line entry points |
 
 ## Setup
@@ -198,6 +220,13 @@ Adjust the cadence with the `cron` line, and the per-run size with `--max-reques
 and `--max-seconds`. Note that GitHub disables scheduled workflows on repositories
 with no activity for 60 days.
 
+Each run also renders a status page from the database — coverage, quality results,
+and recent run history — published to GitHub Pages:
+
+```bash
+uv run bsetl-report --clean-db-path data/seasons/season50/v1.db --out-dir site
+```
+
 ## Documentation
 
 | | |
@@ -205,6 +234,7 @@ with no activity for 60 days.
 | [`docs/DATA_DICTIONARY.md`](docs/DATA_DICTIONARY.md) | Every column, table, and index |
 | [`docs/DESIGN.md`](docs/DESIGN.md) | Why the pipeline is built this way, and what it can't do |
 | [`docs/DOMAIN.md`](docs/DOMAIN.md) | Enough Brawl Stars to read the data |
+| [`docs/SETUP.md`](docs/SETUP.md) | Everything needed to run the pipeline yourself |
 
 ## What's in the data
 
