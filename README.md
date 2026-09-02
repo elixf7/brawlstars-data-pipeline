@@ -11,8 +11,8 @@ league-wide elo drift that makes raw elo incomparable across a season.
 
 Roughly 2.7M ranked sets per season, ~600MB per database.
 
-> **Status.** Extraction, schema, the skill feature, and dataset publishing are
-> complete and in use. The quality gate and scheduled execution are being built out.
+> **Status.** Extraction, schema, the skill feature, the quality gate, and dataset
+> publishing are complete and in use. Scheduled execution is being built out.
 
 ## How it fits together
 
@@ -100,7 +100,19 @@ plus a `skill_bin_metadata` audit table recording each bin's sample count and co
 uv run bsetl-skill-features --clean-db-path data/seasons/season50/v1.db --bin-width-days 3 --min-bin-count 100000 --mapping logit
 ```
 
-**Publish it.** Projects `matches` into Parquet partitioned by day, writes a dataset
+**Check it before publishing anything.** Exits non-zero if the season is not fit to
+publish, so it works as a CI gate.
+
+```bash
+uv run bsetl-check --clean-db-path data/seasons/season50/v1.db
+```
+
+Failures mean the data is wrong — a missing dedup index, duplicate sets, impossible
+elo, timestamps that will not parse, skill metadata labelled with the wrong season.
+Warnings mean something is merely surprising, like an unrecognised game mode.
+
+**Publish it.** Runs the gate first and refuses to build a dataset that fails it.
+Projects `matches` into Parquet partitioned by day, writes a dataset
 card and metadata sidecar from the same numbers, and optionally emits a SQLite copy
 with pipeline state stripped for consumers that expect one.
 

@@ -44,6 +44,9 @@ One row per ranked set (the last game’s timestamp for the set). All columns ar
 - `mode` (TEXT): Ranked mode identifier, e.g., `brawlBall`, `gemGrab`, `hotZone`, `bounty`, `heist`, `knockout`.
 - `map` (TEXT): Map name used for the entire set.
 - `record` (TEXT): Game-by-game results in the set: tokens are `T1` (Team 1 win), `T2` (Team 2 win), `D` (draw). Examples: `T1-T1`, `T2-T1-T1`, `T1-T2-T2`.
+  - A set is first-to-two-wins and draws do not count toward the two, so a set can run past three games: `D-T1-T1` and `T1-D-T1` are both normal.
+  - **Partial sets are common and legitimate.** Battle logs hold only a player's last ~25 battles, so a set can be observed mid-way. In season42 a bare `T1` or `T2` accounts for about 24% of rows. Filter on records where a team reaches two wins if you need completed sets only.
+  - A game after one team reaches two wins is impossible and indicates two adjacent sets merged during grouping. This affects roughly 0.01% of rows; `bsetl-check` reports the rate.
 
 ### Star player fields (from the last game’s MVP tuple)
 

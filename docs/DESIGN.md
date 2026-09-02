@@ -215,6 +215,44 @@ The key is never rendered. `ProvisionedKey.__repr__` redacts it, because the
 realistic leak is not someone printing it deliberately — it is a traceback, a
 debug log, or a CI transcript that happens to include an object.
 
+## Something has to decide whether the output is fit to publish
+
+An automated pipeline publishes whatever it produced. The failures worth
+worrying about are not crashes — those are loud and stop the run — but the quiet
+ones: a crawl that collected a tenth of its usual volume, an upstream change
+that starts nulling a column, a skill feature computed against the wrong season.
+Each of those produces a dataset that looks fine and is wrong.
+
+`bsetl-check` runs a set of checks over a season database and exits non-zero if
+any fails. `bsetl-export` runs the same gate first and refuses to build a
+dataset that fails it, so the check cannot be forgotten; `--skip-checks`
+overrides deliberately. The report is embedded in the exported metadata, so a
+published season carries the evidence it was checked.
+
+Severity is the substance of the design. Things that make the data wrong FAIL:
+a missing unique index, duplicate sets, impossible elo, a collapsed brawler
+pool, timestamps that will not parse, skill metadata labelled with a season that
+is not this one. Things that are merely surprising WARN: an unrecognised mode,
+because a rotation change is news rather than a defect, and gaps in daily
+coverage, which are usually just a run that did not happen. A gate that fails on
+novelty gets switched off.
+
+Two checks are worth singling out.
+
+**Skill provenance.** The skill feature must be labelled with the season it was
+computed over, and its bins must overlap the data they claim to describe. This
+is not hypothetical — a sidecar in this repository is stamped `season42` while
+its bins cover season43's dates. Nothing caught it because nothing was looking.
+
+**Record shape.** A set is first-to-two-wins, and draws do not count toward the
+two, so a set can legitimately run past three games. What cannot happen is a
+game *after* one team reaches two wins. Records that violate this are two
+adjacent sets merged into one, which happens when the star-player marker used to
+delimit sets does not appear where grouping expects it. In season42 that affects
+393 rows, 0.0144%. Small enough to warn rather than block, but a jump in that
+rate means grouping has broken and the records have stopped meaning what they
+say.
+
 ## SQLite to work in, Parquet to hand out
 
 These are different jobs, and one format does not do both well.
@@ -273,6 +311,9 @@ time but not data.
 
 - **Draft order is unrecoverable.** The API returns the six final brawlers with
   no bans and no pick sequence. Sequence-dependent modeling has to infer it.
+- **Merged sets are detected, not repaired.** The gate reports records that no
+  real set could produce, but ingestion still writes them; a consumer wanting
+  clean records should filter on the same rule.
 - **Seeding is still manual.** A new season starts from hand-supplied tags or a
   sample of an old season's star players; nothing picks them automatically.
 - **Yield collapse is global, not per-neighborhood.** The crawl stops when

@@ -14,6 +14,7 @@ from bsetl.publish.parquet import (
     export_clean_sqlite,
     export_matches_to_parquet,
 )
+from bsetl.quality import run_quality_checks
 from bsetl.transform.metadata import compute_season_metadata
 from bsetl.transform.skill_config import derive_season_label
 
@@ -27,6 +28,9 @@ def main() -> None:
     p.add_argument("--season", default=None, help="Season label (default: derived from path)")
     p.add_argument("--repo-id", default=None, help="Hub repo id, for the card's load example")
     p.add_argument("--compression", default="zstd", choices=["zstd", "snappy", "gzip", "none"])
+    p.add_argument("--skip-checks", action="store_true",
+                   help="Export even if the quality gate fails. The gate exists so "
+                        "a bad crawl is not published; skip it deliberately.")
     p.add_argument("--with-sqlite", action="store_true",
                    help="Also emit a SQLite copy with pipeline state stripped, for "
                         "consumers that expect it")
@@ -35,6 +39,22 @@ def main() -> None:
     configure_logging(args)
 
     season = args.season or derive_season_label(args.clean_db_path)
+
+    # Gate first: exporting a bad season wastes a minute, publishing one is
+    # worse, and the whole point is that nobody is watching.
+    report = run_quality_checks(args.clean_db_path, season=season)
+    if not report.ok:
+        print(report.render())
+        if not args.skip_checks:
+            raise SystemExit(
+                "\nRefusing to export: the quality gate failed. "
+                "Investigate, or pass --skip-checks to override."
+            )
+        print("\n--skip-checks given; exporting anyway.\n")
+    elif report.warnings:
+        for w in report.warnings:
+            print(f"warning: {w.name}: {w.message}")
+
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -52,7 +72,10 @@ def main() -> None:
     export_info["partitions"] = len(result.partitions)
 
     (out / "metadata.json").write_text(
-        json.dumps({"season": meta, "export": export_info}, indent=2, ensure_ascii=False)
+        json.dumps(
+            {"season": meta, "export": export_info, "quality": report.to_dict()},
+            indent=2, ensure_ascii=False,
+        )
     )
     (out / "README.md").write_text(
         render_dataset_card(meta, export=export_info, repo_id=args.repo_id)

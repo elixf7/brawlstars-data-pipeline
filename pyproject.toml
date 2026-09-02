@@ -35,6 +35,7 @@ notebook = [
 [project.scripts]
 bsetl-ingest = "bsetl.cli.ingest:main"
 bsetl-key = "bsetl.cli.key:main"
+bsetl-check = "bsetl.cli.check:main"
 bsetl-export = "bsetl.cli.export:main"
 bsetl-publish = "bsetl.cli.publish:main"
 bsetl-queue = "bsetl.cli.queue:main"
