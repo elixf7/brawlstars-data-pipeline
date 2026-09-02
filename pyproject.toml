@@ -43,7 +43,7 @@ bsetl-queue = "bsetl.cli.queue:main"
 bsetl-skill-features = "bsetl.cli.skill_features:main"
 
 [project.urls]
-Repository = "https://github.com/elifried/brawlstars-etl"
+Repository = "https://github.com/elixf7/brawlstars-data-pipeline"
 
 [dependency-groups]
 dev = [

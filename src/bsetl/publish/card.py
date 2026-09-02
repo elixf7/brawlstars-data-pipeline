@@ -49,7 +49,7 @@ def render_dataset_card(
     *,
     export: dict[str, Any] | None = None,
     repo_id: str | None = None,
-    source_repo: str = "https://github.com/elifried/brawlstars-etl",
+    source_repo: str = "https://github.com/elixf7/brawlstars-data-pipeline",
 ) -> str:
     rows = int(meta.get("num_matches") or 0)
     modes = meta.get("modes") or []
