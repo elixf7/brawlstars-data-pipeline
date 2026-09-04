@@ -1,289 +1,205 @@
-# Brawl Stars Ranked Telemetry ETL
+# Brawl Stars Data Pipeline
 
-[![CI](https://github.com/elixf7/brawlstars-data-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/elixf7/brawlstars-data-pipeline/actions/workflows/ci.yml)
+Collects ranked match data from the Brawl Stars API and publishes it as a
+versioned dataset, on a schedule, without anyone watching.
+
+Around 570,000 ranked sets per season, republished twice a week to
+[Hugging Face](https://huggingface.co/datasets/EliF77/brawlstars-ranked).
+
 [![Ingest](https://github.com/elixf7/brawlstars-data-pipeline/actions/workflows/pipeline.yml/badge.svg)](https://github.com/elixf7/brawlstars-data-pipeline/actions/workflows/pipeline.yml)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
+[![CI](https://github.com/elixf7/brawlstars-data-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/elixf7/brawlstars-data-pipeline/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-An automated pipeline that ingests ranked match data from the public Brawl Stars
-API and turns it into an analysis-ready dataset for model training.
+**[Live status →](https://elixf7.github.io/brawlstars-data-pipeline/)** ·
+**[Dataset →](https://huggingface.co/datasets/EliF77/brawlstars-ranked)** ·
+**[What uses it →](https://github.com/elixf7/brawlstars-draft-agent)**
 
-It crawls the player graph breadth-first from a set of seed tags, reconstructs
-complete ranked sets from battle logs, and writes them into a wide, one-row-per-set
-SQLite schema with idempotent inserts. A derived skill feature normalizes match
-strength against the elo distribution local in time, which corrects for the
-league-wide elo drift that makes raw elo incomparable across a season.
+---
 
-Roughly 2.7M ranked sets per season, ~600MB per database.
+## The problem
 
-> **Status.** The pipeline runs end to end — bounded crawl, quality gate, Parquet
-> export, and publication — on a schedule via GitHub Actions.
+The Brawl Stars API has no endpoint for recent matches. You can ask about one
+player at a time, and you get roughly their last 25 battles. There is no way to
+list players, no pagination into history, and no bulk export.
 
-## How it fits together
+So a dataset has to be assembled rather than downloaded. Every ranked battle
+names all six participants, which makes each fetched battle log a source of new
+players to look up. The pipeline crawls outward from a handful of seed players,
+storing what it finds and following the players it meets.
 
-```mermaid
-flowchart TD
-    API["Brawl Stars API<br/><i>~25 battles per player, no bulk endpoint</i>"]
-    KEY["keyprovision<br/><i>mint key for this IP, revoke on exit</i>"]
-    CRAWL["ingest<br/><b>async BFS over the player graph</b><br/>rate-limited · budgeted · resumable"]
-    DB[("season database<br/><i>matches + frontier + run history</i>")]
-    SKILL["transform<br/><b>skill_ns</b><br/><i>time-local ECDF of avg_elo</i>"]
-    GATE{"quality gate<br/><i>18 checks</i>"}
-    PARQ["publish<br/><b>Parquet by day</b><br/><i>9.4x smaller</i>"]
-    HUB[("Hugging Face<br/>dataset + working state")]
-    MODEL["downstream model training"]
-    PAGE["status page"]
+Three constraints shape everything else:
 
-    KEY -.->|short-lived key| CRAWL
-    API --> CRAWL
-    CRAWL -->|idempotent insert| DB
-    DB --> SKILL --> DB
-    DB --> GATE
-    GATE -->|fails| STOP["nothing published"]
-    GATE -->|passes| PARQ --> HUB
-    HUB -.->|restored next run| CRAWL
-    DB --> PAGE
-    HUB --> MODEL
+- **Keys are locked to an IP address.** The permitted address is inside the
+  token, so a key created on a laptop is refused from a CI runner.
+- **The API is rate limited**, and the battle log window is short — re-visiting
+  a player too soon returns matches already stored.
+- **Crawl efficiency falls as the dataset grows.** Independent crawls converge
+  on the same popular players, so an increasing share of requests return data
+  already held.
 
-    classDef store fill:#e8f0fe,stroke:#2d6cdf,color:#16181d
-    classDef halt fill:#fdecea,stroke:#b3261e,color:#16181d
-    class DB,HUB store
-    class STOP halt
+## What it does
+
+```
+Brawl Stars API
+      │   breadth-first crawl over the player graph
+      ▼
+   ingest ──────── bounded by requests, time, and yield
+      │
+      ▼
+ season database ── SQLite: matches, crawl frontier, run history
+      │
+      ├──▶ skill feature ── normalises rating against its own moment in time
+      │
+      ├──▶ quality gate ─── 18 checks; failure blocks publication
+      │
+      ▼
+   published ────── Parquet on Hugging Face, partitioned by season and day
 ```
 
-Runners are ephemeral, so the working database round-trips through the Hub between
-runs — that dashed edge is what makes a series of short bounded crawls behave as one
-continuous one.
+Twice a week the pipeline restores the working database
+from the Hub, crawls until a budget stops it, recomputes the derived skill
+feature, runs the quality gate, publishes if it passes, and stores the database
+back for the next run.
 
-| Package | Holds |
+### Ingestion
+
+A breadth-first crawl with two separate elo filters: one deciding which matches
+to keep, another deciding which players to follow. They want different values —
+following slightly stronger players yields denser coverage of the band being
+collected, while collapsing them into one range either starves the crawl or
+widens what gets stored.
+
+Matches are identified by `(battle_time, map, star_player_tag)` under a unique
+index, so re-crawling is a no-op rather than a source of duplicates. That is
+what makes an unattended schedule safe: a run that fails halfway can simply run
+again.
+
+### Bounded runs
+
+A crawl stops on a request ceiling, a time ceiling, or when it stops finding
+anything new — and records which. Yield is measured on rows *actually inserted*
+over a trailing window, not rows attempted, because deduplication makes those
+diverge sharply once the database is warm.
+
+Unvisited players are written to a frontier table and reloaded by the next run,
+so a series of short runs behaves as one continuous crawl.
+
+### The skill feature
+
+Ranked ratings reset each season and re-spread over the following weeks, so the
+same numeric rating means different things at different points in a season.
+`skill_ns` converts each match's average rating into its percentile *within a
+three-day window* and maps that onto a symmetric scale, which is comparable
+across the whole season.
+
+Bins with too few samples are marked untrustworthy rather than filled in, and
+consumers filter on that flag.
+
+### Credentials
+
+Since keys are locked to an IP the runner does not know in advance, no key is
+stored. Each run signs in to the developer portal, mints a key scoped to its own
+address, uses it, and revokes it on the way out. The address comes from the login
+response itself, which returns a token carrying the address the portal observed.
+
+Keys left behind by interrupted runs are reclaimed automatically, since the
+account allows only ten.
+
+### The quality gate
+
+Eighteen checks run before anything is published, and a failure stops it.
+Severity is the design: things that make the data *wrong* fail — a missing
+deduplication index, duplicate matches, impossible ratings, a collapsed character
+roster, skill metadata labelled with the wrong season. Things that are merely
+*surprising* warn, because a new game mode is a rotation change rather than a
+defect, and a gate that fails on novelty gets switched off.
+
+### Seasons
+
+Ranked resets on the third Thursday of each month. The pipeline computes the
+current season from the calendar rather than being configured with it, so
+rollover is automatic. A database is not allowed to span a reset: mixing two
+rating regimes under one label would corrupt the skill feature, which normalises
+within time windows.
+
+## Using the data
+
+```python
+from datasets import load_dataset
+
+ds = load_dataset("EliF77/brawlstars-ranked", split="train")
+```
+
+One row per **set** — up to three games on a fixed map, first to two wins.
+Partitioned by season and day, so a single week reads without scanning the rest.
+
+| Column | Meaning |
 | --- | --- |
-| `bsetl.ingest` | The crawler and its request pacing |
-| `bsetl.transform` | Schema, the `skill_ns` feature, dataset metadata |
-| `bsetl.state` | Durable pipeline state — seed sampling, fetched-tag tracking |
-| `bsetl.quality` | Data quality checks that gate publication |
-| `bsetl.publish` | Parquet export, dataset card, Hub upload, status page |
-| `bsetl.cli` | Command-line entry points |
+| `battle_time` | UTC timestamp of the final game in the set |
+| `mode`, `map` | Fixed for the whole set |
+| `record` | Game-by-game result, e.g. `T1-T1`, `T2-T1-T1` |
+| `t{1,2}_b{0,1,2}_*` | The six drafted characters and their ratings |
+| `avg_elo` | Mean rating across the six players |
+| `skill_ns` | `avg_elo` normalised against its own moment in the season |
+| `skill_ns_ok` | Whether that normalisation is trustworthy for this row |
 
-## Setup
+Around 2.7M sets in a full season, roughly 600 MB as SQLite and 66 MB as
+Parquet. Full column reference in [`docs/DATA_DICTIONARY.md`](docs/DATA_DICTIONARY.md).
+
+**Worth knowing before modelling on it.** The API exposes the six final
+characters but no pick order and no bans. Battle logs hold only a player's
+recent matches, so partial sets are normal — a bare `T1` is about a quarter of
+rows. And the sample is not uniform: crawling outward from seed players within an
+elo band over-represents active and higher-rated players.
+
+## Running it yourself
 
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv sync              # runtime
-uv sync --all-extras # plus publishing and notebook support
+uv sync
+export BS_API_KEY="your-key"        # from developer.brawlstars.com
+
+uv run bsetl-ingest --tags '#9UUU9QVU' --clean-db-path data/seasons/s54/v1.db \
+  --max-requests 20000 --max-seconds 2400 --min-rows-per-1k-requests 40
+uv run bsetl-check  --clean-db-path data/seasons/s54/v1.db
+uv run bsetl-export --clean-db-path data/seasons/s54/v1.db --out-dir data/exports/s54
 ```
 
-Tests run against a committed sample of a real season, so the transform, quality,
-and export paths are exercised on realistically shaped data rather than only
-hand-built rows:
-
-```bash
-uv run pytest
-uv run ruff check src/ tests/
-```
-
-Get a key from the [developer portal](https://developer.brawlstars.com) and export it.
-Keys are locked to the IP that created them, so a key made at home returns 403
-anywhere else.
-
-```bash
-export BS_API_KEY="your-key"
-```
-
-## Running it
-
-**One crawl.** Walks outward from the seed tags to `--max-depth`, keeping sets whose
-average elo falls in the game range and only following players in the queue range.
-
-```bash
-uv run bsetl-ingest --tags '#9UUU9QVU' --clean-db-path data/seasons/season50/v1.db --max-depth 2 --elo-queue-min 13 --elo-queue-max 23 --elo-game-min 12 --elo-game-max 23 --fetched-tags-ttl-hours 24
-```
-
-**A bounded crawl**, which is how it runs on a schedule. It stops on a request
-ceiling, a time ceiling, or when it stops finding anything new — whichever comes
-first — and prints a summary of what it did. The unvisited frontier is saved, so the
-next run picks up where this one left off rather than restarting from seeds.
-
-```bash
-uv run bsetl-ingest --clean-db-path data/seasons/season50/v1.db --max-requests 20000 --max-seconds 2400 --min-rows-per-1k-requests 40 --flush-every-n-batches 5 --elo-game-min 12 --elo-game-max 23 --fetched-tags-ttl-hours 24
-```
-
-All commands take `-v` for debug detail and `-q` for warnings only. Logs go to
-stderr and the run summary is JSON on stdout, so the two can be separated:
-
-```bash
-uv run bsetl-ingest ... -q > summary.json
-```
-
-Every run records itself in a `pipeline_runs` table — configuration, stop reason,
-requests, rows inserted, HTTP outcomes, and frontier size before and after:
+Logs go to stderr and the run summary is JSON on stdout, so the two separate
+cleanly. Every run records itself — configuration, stop reason, requests, rows
+inserted, HTTP outcomes, frontier size before and after:
 
 ```python
 from bsetl.state import recent_runs
-recent_runs("data/seasons/season50/v1.db", limit=5)
+recent_runs("data/seasons/s54/v1.db", limit=5)
 ```
 
-**Many short crawls.** Chunks a seed file into separate subprocesses so memory stays
-bounded on long runs.
+Full setup for the automated version, including credentials, is in
+[`docs/SETUP.md`](docs/SETUP.md).
 
-```bash
-uv run bsetl-queue --tags-file data/seasons/season50/seed_tags.txt --per-run-tags 5 --max-runs 500 --clean-db-path data/seasons/season50/v1.db --elo-game-min 12 --elo-game-max 23 --fetched-tags-ttl-hours 24
-```
-
-**Compute the skill feature.** Adds `skill_ns` and `skill_ns_ok` to `matches` in place,
-plus a `skill_bin_metadata` audit table recording each bin's sample count and config.
-
-```bash
-uv run bsetl-skill-features --clean-db-path data/seasons/season50/v1.db --bin-width-days 3 --min-bin-count 100000 --mapping logit
-```
-
-**Check it before publishing anything.** Exits non-zero if the season is not fit to
-publish, so it works as a CI gate.
-
-```bash
-uv run bsetl-check --clean-db-path data/seasons/season50/v1.db
-```
-
-Failures mean the data is wrong — a missing dedup index, duplicate sets, impossible
-elo, timestamps that will not parse, skill metadata labelled with the wrong season.
-Warnings mean something is merely surprising, like an unrecognised game mode.
-
-**Publish it.** Runs the gate first and refuses to build a dataset that fails it.
-Projects `matches` into Parquet partitioned by day, writes a dataset
-card and metadata sidecar from the same numbers, and optionally emits a SQLite copy
-with pipeline state stripped for consumers that expect one.
-
-```bash
-uv run bsetl-export --clean-db-path data/seasons/season50/v1.db --out-dir data/exports/season50 --repo-id you/brawlstars-ranked --with-sqlite
-```
-
-On season42 that is 2,720,934 rows into 27 daily files — **66 MB from 623 MB, 9.4x
-smaller** — in about a minute. Uploading needs `uv sync --extra hub` and `HF_TOKEN`;
-without `--yes` it only reports what it would do.
-
-```bash
-uv run bsetl-publish --local-dir data/exports/season50 --repo-id you/brawlstars-ranked --yes
-```
-
-Then explore what landed with [`notebooks/explore_season.ipynb`](notebooks/explore_season.ipynb)
-(`uv sync --extra notebook` first). The notebook does not run the pipeline — that is
-what the CLI is for.
-
-## Running on a schedule
-
-[`.github/workflows/pipeline.yml`](.github/workflows/pipeline.yml) runs every six
-hours. Each run mints its own API key, crawls until it hits a budget, gates the
-result, publishes if it passes, and revokes the key on the way out.
-
-```
-restore working db  ──▶  crawl (bounded)  ──▶  quality gate  ──▶  export  ──▶  publish
-   from the Hub            mints + revokes         exit 1            Parquet      to the Hub
-                            its own key           on failure
-        ▲                                                                            │
-        └──────────────── store working db, even if the run failed ◀─────────────────┘
-```
-
-Runners are ephemeral, so the working database — carrying the crawl frontier,
-fetched-tag ledger, and run history — is stored beside the dataset under a `state/`
-prefix and restored at the start of each run. That is what makes a series of short
-runs equivalent to one continuous crawl. It is pushed back even on failure, since a
-failed run still advanced the frontier.
-
-**Setup.** Two repository variables and three secrets:
+## Commands
 
 | | |
 | --- | --- |
-| `vars.BSETL_DATASET_REPO` | Hub dataset, e.g. `you/brawlstars-ranked` |
-| `secrets.BS_DEV_EMAIL` | Developer portal account |
-| `secrets.BS_DEV_PASSWORD` | Developer portal password |
-| `secrets.HF_TOKEN` | Hugging Face token with write access |
-
-The season is computed, not configured. Ranked resets on the third Thursday of each
-month, so the workflow works out which season is running and rolls over on its own:
-
-```bash
-uv run bsetl-season current
-# season53: 2026-08-20 to 2026-09-17 (15 days until the next reset)
-```
-
-Then drop seed tags for the season's first run into `seeds/<season>.txt` (see
-[`seeds/README.md`](seeds/README.md)); later runs resume the stored frontier and do
-not need it.
-
-Confirm the portal credentials work before relying on them:
-
-```bash
-uv run bsetl-key check
-```
-
-Adjust the cadence with the `cron` line, and the per-run size with `--max-requests`
-and `--max-seconds`. Note that GitHub disables scheduled workflows on repositories
-with no activity for 60 days.
-
-Each run also renders a status page from the database — coverage, quality results,
-and recent run history — published to GitHub Pages:
-
-```bash
-uv run bsetl-report --clean-db-path data/seasons/season50/v1.db --out-dir site
-```
+| `bsetl-ingest` | Run one bounded crawl |
+| `bsetl-check` | Quality gate; exits non-zero on failure |
+| `bsetl-export` | Parquet plus a dataset card |
+| `bsetl-publish` | Upload to the Hub |
+| `bsetl-season` | Which season is running, and when the next starts |
+| `bsetl-key` | Mint, list, and reclaim API keys |
+| `bsetl-state` | Move the working database to and from the Hub |
+| `bsetl-report` | Render the status page |
 
 ## Documentation
 
 | | |
 | --- | --- |
 | [`docs/DATA_DICTIONARY.md`](docs/DATA_DICTIONARY.md) | Every column, table, and index |
-| [`docs/DESIGN.md`](docs/DESIGN.md) | Why the pipeline is built this way, and what it can't do |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | Why the pipeline is built this way |
 | [`docs/DOMAIN.md`](docs/DOMAIN.md) | Enough Brawl Stars to read the data |
-| [`docs/SETUP.md`](docs/SETUP.md) | Everything needed to run the pipeline yourself |
-
-## What's in the data
-
-One row per ranked set — up to three games on a fixed map, first team to two wins.
-Core fields cover time, mode, map, and the game-by-game record; the six drafted
-brawlers are flattened into `t{team}_b{slot}_*` columns; `avg_elo` is the mean elo
-across the six players, and `skill_ns` is its time-local normalization.
-
-Deduplication is enforced by a unique index on `(battle_time, map, star_player_tag)`,
-so re-crawling the same players is safe and cheap.
-
-**Limitations worth knowing.** The API exposes only the final six brawlers — no bans
-and no pick order, so draft sequence cannot be recovered. Battle logs hold only a
-player's last ~25 battles, which sets how often re-crawling a player is worthwhile.
-Only `soloRanked` battles are ingested. More in
-[DESIGN.md](docs/DESIGN.md#known-limitations).
-
-## Credentials and security
-
-The repository stores no credentials. There is exactly one way to supply a key
-locally: the `BS_API_KEY` environment variable.
-
-Automated runs use no stored key at all. Keys are CIDR-locked — the permitted
-address is inside the token — so a key made anywhere else is useless on a CI runner
-whose address changes between runs. Instead the run signs in to the developer portal
-with credentials held as repository secrets, mints a key scoped to the address it is
-actually calling from, and revokes it in a `finally` block. The key lives for one run
-and never touches disk.
-
-```bash
-export BS_DEV_EMAIL="you@example.com" BS_DEV_PASSWORD="..."
-
-uv run bsetl-key check     # mint, verify, revoke — proves credentials work
-uv run bsetl-key list      # existing keys and how this host appears
-uv run bsetl-key sweep     # reclaim keys left by runs that died mid-flight
-
-# and for a crawl:
-uv run bsetl-ingest --provision-key --clean-db-path data/seasons/season50/v1.db --max-requests 20000
-```
-
-Key material is never printed by any of these — only key ids, names, and the host
-address.
-
-- Never pass a key as a command-line argument; it lands in shell history and the
-  process table. Both CLIs read it from the environment, and child processes inherit
-  it rather than receiving it as an argument.
-- `.env` is git-ignored. `.env.example` documents the variables.
-- Season databases are git-ignored — they are hundreds of megabytes and belong in the
-  published dataset, not in version control.
+| [`docs/SETUP.md`](docs/SETUP.md) | Running the automated pipeline yourself |
 
 ## License
 
