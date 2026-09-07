@@ -182,28 +182,28 @@ def get_player_data(json_player):
         '3vs3Victories': json_player['3vs3Victories']
     }
 
-def get_brawler_data(json_player, brawler_name, elo, power_level):
-    json_brawlers = json_player.get('brawlers', [])
-    target_brawler_json = None
-    for b in json_brawlers:
-        if b['name'] == brawler_name:
-            target_brawler_json = b
-            break
-    if not target_brawler_json:
-        return {
-            'name': brawler_name,
-            'elo': elo,
-            'rank': None,
-            'highestTrophies': None,
-            'power': power_level
-        }
+def get_brawler_data(json_player, brawler_name, elo, power_level, tag=None):
+    """One drafted brawler, as stored.
 
+    Everything here comes from the battle log itself. Profile-only fields are
+    deliberately absent: the crawl does not fetch profiles, so carrying them
+    meant carrying nulls.
+
+    `json_player` may be a BUDGET_SKIP or FETCH_FAILED sentinel rather than a
+    profile — both are truthy, so the type is what has to be checked.
+    """
+    json_brawlers = (
+        json_player.get('brawlers', []) if isinstance(json_player, dict) else []
+    )
+    for b in json_brawlers:
+        if b.get('name') == brawler_name:
+            power_level = b.get('power', power_level)
+            break
     return {
         'name': brawler_name,
         'elo': elo,
-        'rank': target_brawler_json['rank'],
-        'highestTrophies': target_brawler_json['highestTrophies'],
-        'power': target_brawler_json['power'],
+        'power': power_level,
+        'tag': tag,
     }
 
 def process_team(team, player_data_cache):
@@ -211,17 +211,10 @@ def process_team(team, player_data_cache):
     players = []
     for (brawler_name, power_level, tag, elo) in team:
         json_player = player_data_cache.get(tag)
+        brawler_data = get_brawler_data(json_player, brawler_name, elo, power_level, tag)
         if json_player and isinstance(json_player, dict):
-            brawler_data = get_brawler_data(json_player, brawler_name, elo, power_level)
             player_data = get_player_data(json_player)
         else:
-            brawler_data = {
-                'name': brawler_name,
-                'elo': elo,
-                'rank': None,
-                'highestTrophies': None,
-                'power': power_level
-            }
             player_data = {
                 'tag': tag,
                 'name': None,
@@ -250,13 +243,7 @@ def _pad_brawler_list(brawlers):
     """Ensure a list of 3 brawler dicts with the required keys (fill with None)."""
     arr = list(brawlers) if brawlers else []
     while len(arr) < 3:
-        arr.append({
-            'name': None,
-            'elo': None,
-            'rank': None,
-            'highestTrophies': None,
-            'power': None,
-        })
+        arr.append({'name': None, 'elo': None, 'power': None, 'tag': None})
     return arr[:3]
 
 def _compute_avg_elo(team1_brawlers, team2_brawlers) -> float | None:
@@ -280,7 +267,7 @@ def build_clean_row(
     elo_game_max: float | None
 ) -> tuple[Any, ...] | None:
     """
-    Return a tuple of 40 values matching the `matches` column order or None.
+    Return a tuple matching the `matches` column order, or None.
     Applies avg_elo computation and filters out rows by elo_game_min/elo_game_max and avg_elo > 23.
     """
     if not game:
@@ -339,13 +326,7 @@ def build_clean_row(
     ]
 
     for b in team1_brawlers + team2_brawlers:
-        out.extend([
-            b.get('name'),
-            b.get('elo'),
-            b.get('rank'),
-            b.get('highestTrophies'),
-            b.get('power'),
-        ])
+        out.extend([b.get('name'), b.get('elo'), b.get('power'), b.get('tag')])
 
     return tuple(out)
 

@@ -17,6 +17,7 @@ from pathlib import Path
 
 from bsetl.logconfig import get_logger
 from bsetl.publish.hub import PublishError, resolve_token
+from bsetl.transform.schema import schema_drift
 
 logger = get_logger(__name__)
 
@@ -27,6 +28,41 @@ STATE_PREFIX = "state"
 
 def state_path(season: str) -> str:
     return f"{STATE_PREFIX}/{season}.db"
+
+
+def _schema_is_current(db_path: Path, season: str) -> bool:
+    """Whether stored state can still be crawled into.
+
+    A schema change makes prior state unusable: the crawl builds rows to the
+    current column list, and the gate rejects a database that does not match it.
+    Resuming anyway would either fail on insert or publish the wrong columns, so
+    the run starts the season over instead. That loses the frontier and the
+    rows collected so far, which is the intended cost of changing the schema —
+    and it is a decision the pipeline should make on its own rather than
+    requiring someone to delete a file on the Hub.
+    """
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            missing, stale = schema_drift(conn)
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as e:
+        logger.warning(
+            "Stored state for %s is not a readable database (%s); "
+            "discarding it and starting the season over", season, e,
+        )
+        return False
+    if not missing and not stale:
+        return True
+    logger.warning(
+        "Stored state for %s predates the current schema (missing %s, stale %s); "
+        "discarding it and starting the season over",
+        season, missing or "nothing", stale or "nothing",
+    )
+    return False
 
 
 def pull_state(
@@ -61,6 +97,11 @@ def pull_state(
     # Copy out of the cache: the crawl writes to this file, and mutating a
     # cached blob in place would corrupt the cache for later downloads.
     dest_path.write_bytes(Path(cached).read_bytes())
+
+    if not _schema_is_current(dest_path, season):
+        dest_path.unlink()
+        return False
+
     logger.info("Restored %s (%.1f MB) from %s",
                 season, dest_path.stat().st_size / 1e6, repo_id)
     return True

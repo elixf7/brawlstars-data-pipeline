@@ -85,7 +85,7 @@ Collected and published automatically by [an open-source ETL pipeline]({source_r
 | Distinct brawlers | {meta.get('num_unique_brawlers', 'unknown')} |
 | Modes | {len(modes)} |
 | Maps | {len(maps)} |
-| Format | Parquet, partitioned by `battle_date` |
+| Format | Parquet, one file per season |
 """,
     ]
 
@@ -105,12 +105,14 @@ from datasets import load_dataset
 ds = load_dataset("{repo_id or 'your-name/brawlstars-ranked'}", split="train")
 ```
 
-Partitioning by day means a time slice can be read without scanning the season:
+Each season is one file, written in time order. Parquet stores the min and max
+of every row group, so a reader asking for a date range skips the groups that
+cannot match rather than scanning the season:
 
 ```python
 import pyarrow.dataset as ds_
 table = ds_.dataset("data", partitioning="hive").to_table(
-    filter=ds_.field("battle_date") >= "2025-11-10"
+    filter=ds_.field("battle_time") >= "20251110T000000.000Z"
 )
 ```
 
@@ -128,7 +130,13 @@ six drafted brawlers are flattened into `t{{team}}_b{{slot}}_*` columns.
 | `avg_elo` | Mean elo across the six players |
 | `skill_ns` | `avg_elo` normalized against the elo distribution local in time |
 | `skill_ns_ok` | 1 when the row's time bin had enough samples to trust `skill_ns` |
-| `t{{1,2}}_b{{0,1,2}}_*` | Per-brawler name, elo, rank, highest trophies, power |
+| `t{{1,2}}_b{{0,1,2}}_name` | The brawler drafted in that slot |
+| `t{{1,2}}_b{{0,1,2}}_elo` | That brawler's ranked rating at match time |
+| `t{{1,2}}_b{{0,1,2}}_power` | That brawler's power level |
+| `t{{1,2}}_b{{0,1,2}}_tag` | Player tag of whoever brought it |
+
+Every participant is identified, not only the star player, so a set can be
+joined to all six players in it. `star_player_tag` matches one of the six.
 
 Filter on `skill_ns_ok = 1` for analyses that depend on the skill feature.
 

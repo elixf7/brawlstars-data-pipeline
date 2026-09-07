@@ -18,8 +18,11 @@ def a_row(battle_time="20251102T002849.000Z", tag="#A", record="T1-T1",
           avg_elo=17.5, mode="brawlBall", brawler="RICO"):
     row = [None, battle_time, mode, "Hot Potato", record, brawler, 11, tag, 18, avg_elo]
     row += [None] * (N - 10)
-    for slot, i in enumerate(range(10, 10 + 30, 5)):
-        row[i] = f"{brawler}{slot}"      # distinct names per slot
+    # Positions come from the schema, not a stride: the per-slot field list has
+    # changed once already and a hardcoded step silently fills the wrong columns.
+    for slot, col in enumerate(c for c in COLS if c.endswith("_name") and c[0] == "t"):
+        row[COLS.index(col)] = f"{brawler}{slot}"
+        row[COLS.index(col.replace("_name", "_tag"))] = f"#P{slot}"
     return tuple(row)
 
 
@@ -69,6 +72,62 @@ def test_records_no_real_set_could_produce(record):
 
 
 # ------------------------------------------------------------- structural
+def test_stale_schema_is_caught_even_though_the_data_is_fine(tmp_path):
+    """A database from an older shape passes every content check.
+
+    That is exactly what makes it dangerous: the rows are well formed and in
+    range, so nothing else in the gate objects while the export writes the
+    wrong columns.
+    """
+    db = build(tmp_path / "q.db", many(5))
+    conn = sqlite3.connect(db)
+    conn.execute("ALTER TABLE matches DROP COLUMN t1_b0_tag")
+    conn.execute("ALTER TABLE matches ADD COLUMN t1_b0_rank INTEGER")
+    conn.commit()
+    conn.close()
+    r = run_quality_checks(db, thresholds=LOOSE)
+    schema = result(r, "schema")
+    assert schema.severity is Severity.FAIL
+    assert schema.details["missing"] == ["t1_b0_tag"]
+    assert schema.details["stale"] == ["t1_b0_rank"]
+
+
+def test_column_the_schema_no_longer_has_only_warns(tmp_path):
+    db = build(tmp_path / "q.db", many(5))
+    conn = sqlite3.connect(db)
+    conn.execute("ALTER TABLE matches ADD COLUMN t1_b0_highest_trophies INTEGER")
+    conn.commit()
+    conn.close()
+    assert result(run_quality_checks(db, thresholds=LOOSE), "schema").severity is Severity.WARN
+
+
+def test_skill_columns_are_not_mistaken_for_stale_ones(tmp_path):
+    """The transform adds these after the fact; they are not a shape drift."""
+    db = build(tmp_path / "q.db", many(5))
+    conn = sqlite3.connect(db)
+    conn.execute("ALTER TABLE matches ADD COLUMN skill_ns REAL")
+    conn.execute("ALTER TABLE matches ADD COLUMN skill_ns_ok INTEGER")
+    conn.commit()
+    conn.close()
+    assert result(run_quality_checks(db, thresholds=LOOSE), "schema").severity is Severity.OK
+
+
+def test_unidentified_slots_fail_because_names_without_tags_means_a_parser_bug(tmp_path):
+    db = build(tmp_path / "q.db", many(5))
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE matches SET t2_b1_tag = NULL")
+    conn.commit()
+    conn.close()
+    assert result(run_quality_checks(db, thresholds=LOOSE),
+                  "participant_tags").severity is Severity.FAIL
+
+
+def test_every_slot_identified_passes(tmp_path):
+    db = build(tmp_path / "q.db", many(5))
+    assert result(run_quality_checks(db, thresholds=LOOSE),
+                  "participant_tags").severity is Severity.OK
+
+
 def test_missing_index_fails_because_recrawling_would_duplicate(tmp_path):
     db = build(str(tmp_path / "s.db"), many(5), with_index=False)
     r = run_quality_checks(db, thresholds=LOOSE)

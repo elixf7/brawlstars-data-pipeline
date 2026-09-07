@@ -63,9 +63,15 @@ For each team `t ∈ {1,2}` and brawler slot `b ∈ {0,1,2}`:
 
 - `t{t}_b{b}_name` (TEXT): Brawler name.
 - `t{t}_b{b}_elo` (INTEGER): Brawler Elo (ranked rating) at match time.
-- `t{t}_b{b}_rank` (INTEGER): Ranked tier at match time (Elo-style rank tier; see game docs).
-- `t{t}_b{b}_highest_trophies` (INTEGER): Highest trophies recorded for the player on this brawler.
 - `t{t}_b{b}_power` (INTEGER): Brawler power level.
+- `t{t}_b{b}_tag` (TEXT): Player tag of whoever brought this brawler, e.g. `#8Q8YC8VJ0`.
+
+Every participant is identified, not only the star player, so a match can be
+joined to all six players in it. `star_player_tag` is retained and will match one
+of these six.
+
+`rank` and `highest_trophies` were removed. They came from the player-profile
+endpoint, which the crawl does not call, so they were always null.
 
 Notes:
 

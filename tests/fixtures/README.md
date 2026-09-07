@@ -14,6 +14,14 @@ BLAKE2s digest, so uniqueness and the `(battle_time, map, star_player_tag)`
 dedup key behave exactly as in production while no real in-game identifiers are
 committed.
 
+The six per-slot `t{t}_b{b}_tag` columns are synthetic. They were added to this
+fixture after the fact, and the sets it was drawn from predate the crawl that
+collects them, so there is nothing real to carry over. Each set's star tag is
+placed in one slot — chosen by digest — and the remaining five are derived from
+the set key, which reproduces the property the pipeline relies on: every slot is
+identified, and `star_player_tag` joins to exactly one of them. Everything else
+in the fixture is real.
+
 Built with the current schema, so unlike season42 itself it carries the unique
 index. It exists so the transform, quality, and export paths are exercised
 against realistically shaped data rather than only hand-built rows — synthetic

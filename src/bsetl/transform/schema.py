@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from bsetl.transform.skill_config import SKILL_COLUMN, SKILL_COVERAGE_COLUMN
+
 MATCHES_COLUMNS: list[tuple[str, str]] = [
     ("id", "INTEGER PRIMARY KEY"),
     ("battle_time", "TEXT"),
@@ -16,36 +18,55 @@ MATCHES_COLUMNS: list[tuple[str, str]] = [
 ]
 
 
+#: Per-slot fields. `tag` identifies the player who brought the brawler, which
+#: makes a match joinable to the players in it — every participant, not only the
+#: star player. `rank` and `highest_trophies` were dropped: they come from the
+#: player-profile endpoint, which the crawl does not call, so they were always
+#: null.
+BRAWLER_FIELDS: tuple[str, ...] = ("name", "elo", "power", "tag")
+
+
 def get_brawler_column_names() -> list[str]:
-    names: list[str] = []
-    for team in (1, 2):
-        for slot in range(3):
-            prefix = f"t{team}_b{slot}_"
-            names.extend([
-                prefix + "name",
-                prefix + "elo",
-                prefix + "rank",
-                prefix + "highest_trophies",
-                prefix + "power",
-            ])
-    return names
+    return [
+        f"t{team}_b{slot}_{field}"
+        for team in (1, 2)
+        for slot in range(3)
+        for field in BRAWLER_FIELDS
+    ]
 
 
 def get_matches_column_defs() -> list[tuple[str, str]]:
     cols = MATCHES_COLUMNS.copy()
     for name in get_brawler_column_names():
-        # team brawler fields: mostly INTEGER except name
-        col_type = "TEXT" if name.endswith("name") else "INTEGER"
-        if name.endswith("highest_trophies"):
-            col_type = "INTEGER"
+        col_type = "TEXT" if name.endswith(("name", "tag")) else "INTEGER"
         cols.append((name, col_type))
     return cols
+
+
+#: Columns the transform adds after ingestion. A `matches` table is well formed
+#: with or without them, so shape comparisons must not read them as drift.
+OPTIONAL_COLUMNS: frozenset[str] = frozenset({SKILL_COLUMN, SKILL_COVERAGE_COLUMN})
+
+
+def schema_drift(conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
+    """How a `matches` table differs from the schema this codebase writes.
+
+    Returns the columns that are missing and the columns that are no longer part
+    of the schema. Both the quality gate and the state restore ask this, and
+    they must agree: a database the gate would reject is one the crawl must not
+    resume from.
+    """
+    actual = {r[1] for r in conn.execute("PRAGMA table_info(matches)")}
+    if not actual:
+        return ([name for name, _ in get_matches_column_defs()], [])
+    expected = {name for name, _ in get_matches_column_defs()}
+    return (sorted(expected - actual), sorted(actual - expected - OPTIONAL_COLUMNS))
 
 
 def create_matches_table_if_not_exists(conn: sqlite3.Connection) -> None:
     """Create matches schema exactly as specified and add indexes.
 
-    The column order matches the documented contract and totals 40 columns.
+    The column order matches the documented contract and totals 34 columns.
     """
     col_defs = ",\n            ".join([f"{n} {t}" for n, t in get_matches_column_defs()])
     sql = f"""

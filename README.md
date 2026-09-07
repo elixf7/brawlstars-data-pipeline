@@ -51,10 +51,10 @@ Brawl Stars API
       │
       ├──▶ skill feature ── normalises rating against its own moment in time
       │
-      ├──▶ quality gate ─── 18 checks; failure blocks publication
+      ├──▶ quality gate ─── 21 checks; failure blocks publication
       │
       ▼
-   published ────── Parquet on Hugging Face, partitioned by season and day
+   published ────── Parquet on Hugging Face, one file per season
 ```
 
 Twice a week the pipeline restores the working database
@@ -132,14 +132,17 @@ ds = load_dataset("EliF77/brawlstars-ranked", split="train")
 ```
 
 One row per **set** — up to three games on a fixed map, first to two wins.
-Partitioned by season and day, so a single week reads without scanning the rest.
+One file per season, written in time order; Parquet records the time range of
+each row group, so a reader asking for a single week still skips the rest.
 
 | Column | Meaning |
 | --- | --- |
 | `battle_time` | UTC timestamp of the final game in the set |
 | `mode`, `map` | Fixed for the whole set |
 | `record` | Game-by-game result, e.g. `T1-T1`, `T2-T1-T1` |
-| `t{1,2}_b{0,1,2}_*` | The six drafted characters and their ratings |
+| `t{1,2}_b{0,1,2}_name` | The six drafted characters |
+| `t{1,2}_b{0,1,2}_elo`, `_power` | Rating and power level of each |
+| `t{1,2}_b{0,1,2}_tag` | Which player brought each character |
 | `avg_elo` | Mean rating across the six players |
 | `skill_ns` | `avg_elo` normalised against its own moment in the season |
 | `skill_ns_ok` | Whether that normalisation is trustworthy for this row |

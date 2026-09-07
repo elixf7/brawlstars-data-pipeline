@@ -5,9 +5,12 @@ import pytest
 from bsetl.ingest.budget import CrawlStats, Outcome, RunBudget
 from bsetl.ingest.crawler import (
     BUDGET_SKIP,
+    FETCH_FAILED,
     fetch_json_async,
+    get_brawler_data,
     group_ranked_matches,
     insert_rows_matches_in_chunks,
+    process_team,
 )
 from bsetl.transform.schema import get_matches_column_defs
 
@@ -77,3 +80,25 @@ def test_malformed_battles_are_counted_not_silently_dropped():
 
 def test_parse_failures_are_optional():
     assert group_ranked_matches({"items": [{"broken": True}]}) == []
+
+
+# ------------------------------------------------- slots when a profile is missing
+@pytest.mark.parametrize("cached", [None, BUDGET_SKIP, FETCH_FAILED])
+def test_a_slot_is_still_recorded_when_the_profile_never_arrived(cached):
+    """The sentinels are truthy objects, not dicts. Everything the row needs
+    comes from the battle log anyway, so a missing profile costs nothing but
+    the power-level refinement."""
+    b = get_brawler_data(cached, "RICO", 14, 11, "#A1")
+    assert b == {"name": "RICO", "elo": 14, "power": 11, "tag": "#A1"}
+
+
+def test_the_profile_refines_power_when_it_is_there():
+    profile = {"brawlers": [{"name": "RICO", "power": 9}]}
+    assert get_brawler_data(profile, "RICO", 14, 11, "#A1")["power"] == 9
+
+
+def test_every_slot_carries_the_tag_of_whoever_brought_it():
+    team = [("RICO", 11, "#A1", 14), ("COLT", 11, "#A2", 15), ("BULL", 10, "#A3", 13)]
+    brawlers, _ = process_team(team, {"#A2": FETCH_FAILED})
+    assert [b["tag"] for b in brawlers] == ["#A1", "#A2", "#A3"]
+    assert [b["name"] for b in brawlers] == ["RICO", "COLT", "BULL"]

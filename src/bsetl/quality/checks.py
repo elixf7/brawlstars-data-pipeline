@@ -21,6 +21,7 @@ from typing import Any
 
 from bsetl.logconfig import get_logger
 from bsetl.transform.records import record_is_well_formed
+from bsetl.transform.schema import get_brawler_column_names, schema_drift
 from bsetl.transform.seasons import seasons_spanned
 from bsetl.transform.skill_config import SKILL_COLUMN, SKILL_COVERAGE_COLUMN
 
@@ -83,14 +84,32 @@ def _columns(conn: sqlite3.Connection) -> set[str]:
 
 # --------------------------------------------------------------- structure
 def check_schema(conn: sqlite3.Connection, t: Thresholds) -> CheckResult:
+    """The table must match the schema this codebase writes, column for column.
+
+    Checking only that a few core fields exist lets a database built by an older
+    version pass every other check in this file: the rows are well formed, the
+    values are in range, and the export quietly writes the wrong columns. The
+    comparison is exact so that a shape change has to be deliberate.
+    """
     if not _table_exists(conn, "matches"):
         return CheckResult("schema", Severity.FAIL, "No `matches` table")
-    missing = set(CORE_COLUMNS) - _columns(conn)
+    actual = _columns(conn)
+    missing, stale = schema_drift(conn)
+    details = {"missing": missing, "stale": stale, "columns": len(actual)}
     if missing:
-        return CheckResult("schema", Severity.FAIL,
-                           f"Missing core column(s): {sorted(missing)}")
+        return CheckResult(
+            "schema", Severity.FAIL,
+            f"Missing column(s): {missing}"
+            + (f"; stale column(s): {stale}" if stale else ""),
+            details,
+        )
+    if stale:
+        return CheckResult(
+            "schema", Severity.WARN,
+            f"Column(s) no longer in the schema: {stale}", details,
+        )
     return CheckResult("schema", Severity.OK,
-                       f"{len(_columns(conn))} columns, all core fields present")
+                       f"{len(actual)} columns, matching the schema", details)
 
 
 def check_dedup_index(conn: sqlite3.Connection, t: Thresholds) -> CheckResult:
@@ -145,6 +164,32 @@ def check_core_nulls(conn: sqlite3.Connection, t: Thresholds) -> list[CheckResul
             {"null_rate": round(rate, 6), "nulls": nulls or 0},
         ))
     return out
+
+
+def check_participant_tags(conn: sqlite3.Connection, t: Thresholds) -> CheckResult:
+    """Every drafted slot should name the player who brought it.
+
+    The per-slot tags are what let a match be joined to all six players in it,
+    not just the star. They arrive in the same battle-log payload as the brawler
+    names, so names present with tags missing means the parser regressed rather
+    than the API withholding anything.
+    """
+    total = conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
+    if not total:
+        return CheckResult("participant_tags", Severity.SKIP, "No rows")
+    cols = [c for c in get_brawler_column_names() if c.endswith("_tag")]
+    sums = ", ".join(f"SUM({c} IS NULL)" for c in cols)
+    counts = conn.execute(f"SELECT {sums} FROM matches").fetchone()
+    nulls = sum(c or 0 for c in counts)
+    rate = nulls / (total * len(cols))
+    sev = Severity.FAIL if rate > t.max_core_null_rate else Severity.OK
+    return CheckResult(
+        "participant_tags", sev,
+        f"{rate:.3%} of {len(cols)} per-slot tags null"
+        + ("" if sev is Severity.OK else
+           f", above the {t.max_core_null_rate:.1%} limit"),
+        {"null_rate": round(rate, 6), "nulls": nulls, "slots": len(cols)},
+    )
 
 
 def check_battle_time_parses(conn: sqlite3.Connection, t: Thresholds) -> CheckResult:
@@ -439,6 +484,7 @@ CHECKS = (
     check_row_count,
     check_no_duplicates,
     check_core_nulls,
+    check_participant_tags,
     check_battle_time_parses,
     check_elo_range,
     check_record_format,
