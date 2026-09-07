@@ -147,6 +147,7 @@ jobs:
           uv run bsetl-publish \
             --local-dir "exports/$SEASON" \
             --repo-id "$DATASET_REPO" \
+            --season "$SEASON" \
             --message "Scheduled update $(date -u +%Y-%m-%dT%H:%MZ)" \
             --yes
 

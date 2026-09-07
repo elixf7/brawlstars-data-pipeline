@@ -81,6 +81,24 @@ def push_state(
     if not src.exists():
         raise PublishError(f"No database to store: {src}")
 
+    # Vacuum before uploading. This file is pushed on every run and the Hub
+    # keeps every version, so pages freed by deletes and rebuilt indexes would
+    # otherwise be re-uploaded week after week.
+    before = src.stat().st_size
+    try:
+        import sqlite3
+        conn = sqlite3.connect(src)
+        try:
+            conn.execute("VACUUM")
+        finally:
+            conn.close()
+        after = src.stat().st_size
+        if after < before:
+            logger.info("Vacuumed %s: %.1f MB -> %.1f MB",
+                        src.name, before / 1e6, after / 1e6)
+    except Exception as e:
+        logger.warning("Could not vacuum %s before upload: %s", src.name, e)
+
     api = HfApi(token=resolve_token(token))
     api.create_repo(repo_id=repo_id, repo_type="dataset", exist_ok=True)
     api.upload_file(

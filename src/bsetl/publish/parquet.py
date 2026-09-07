@@ -82,18 +82,23 @@ def export_matches_to_parquet(
     out_dir: str,
     *,
     season: str | None = None,
+    partition: str = "season",
     batch_size: int = 200_000,
     compression: str = "zstd",
     overwrite: bool = True,
 ) -> ExportResult:
-    """Write `matches` as Parquet, partitioned by season and day.
+    """Write `matches` as Parquet under `data/season=<label>/`.
 
-    Partitioned by day because that is how the data is consumed: a season is
-    analysed in time slices, and a reader wanting one week should not scan the
-    whole season. Partitioned by season above that so publishing a new season
-    adds to the dataset rather than replacing the last one — both levels are
-    Hive-style, so readers get `season` and `battle_date` as real columns.
+    One file per season by default. Rows are written in time order and Parquet
+    records min/max per row group, so a reader asking for a date range still
+    skips the groups that cannot match — the filtering that day-level
+    directories would have provided, without a directory per day.
+
+    `partition="day"` restores a file per day. That is worth it only if a
+    consumer needs to fetch single days without downloading the season.
     """
+    if partition not in ("season", "day"):
+        raise ValueError("partition must be 'season' or 'day'")
     src = Path(db_path)
     if not src.exists():
         raise FileNotFoundError(f"Source database not found: {src}")
@@ -110,11 +115,14 @@ def export_matches_to_parquet(
         total = int(conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0])
         logger.info("Exporting %d rows from %s", total, src.name)
 
-        # One writer per day, kept open across batches so a day that spans
-        # batch boundaries lands in a single file rather than many small ones.
+        # One writer per partition, kept open across batches so a partition
+        # spanning a batch boundary lands in one file rather than many small ones.
         writers: dict[str, pq.ParquetWriter] = {}
+        # Time order matters: it is what lets a single file answer a date range
+        # by skipping row groups.
         cursor = conn.execute(f"SELECT {', '.join(names)} FROM matches ORDER BY battle_time")
         rows_written = 0
+        days: set[str] = set()
         try:
             while True:
                 rows = cursor.fetchmany(batch_size)
@@ -123,20 +131,26 @@ def export_matches_to_parquet(
                 buckets: dict[str, list[tuple]] = {}
                 bt = names.index("battle_time")
                 for r in rows:
-                    buckets.setdefault(_partition_key(r[bt]), []).append(r)
+                    key = _partition_key(r[bt]) if partition == "day" else "_all"
+                    buckets.setdefault(key, []).append(r)
+                    days.add(_partition_key(r[bt]))
 
-                for day, bucket in buckets.items():
+                for key, bucket in buckets.items():
                     table = pa.Table.from_pydict(
                         {n: [r[i] for r in bucket] for i, n in enumerate(names)},
                         schema=schema,
                     )
-                    if day not in writers:
-                        part = root / f"battle_date={day}"
-                        part.mkdir(parents=True, exist_ok=True)
-                        writers[day] = pq.ParquetWriter(
-                            part / "data.parquet", schema, compression=compression
+                    if key not in writers:
+                        if partition == "day":
+                            part = root / f"battle_date={key}"
+                            part.mkdir(parents=True, exist_ok=True)
+                            target = part / "data.parquet"
+                        else:
+                            target = root / "data.parquet"
+                        writers[key] = pq.ParquetWriter(
+                            target, schema, compression=compression
                         )
-                    writers[day].write_table(table)
+                    writers[key].write_table(table)
                     rows_written += len(bucket)
         finally:
             for w in writers.values():
@@ -150,10 +164,7 @@ def export_matches_to_parquet(
         files=len(files),
         source_bytes=src.stat().st_size,
         parquet_bytes=sum(f.stat().st_size for f in files),
-        partitions=sorted(
-            p.name.split("=", 1)[1] for p in root.iterdir()
-            if p.is_dir() and p.name.startswith("battle_date=")
-        ),
+        partitions=sorted(days),
     )
     logger.info(
         "Wrote %d rows into %d file(s), %.1f MB from %.1f MB (%.1fx smaller)",

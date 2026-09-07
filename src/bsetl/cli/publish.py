@@ -19,6 +19,9 @@ def main() -> None:
     p.add_argument("--token", default=None, help="Overrides HF_TOKEN")
     p.add_argument("--private", action="store_true", help="Create the repo private")
     p.add_argument("--message", default=None, help="Commit message")
+    p.add_argument("--season", default=None,
+                   help="Mirror this season's prefix exactly, removing remote "
+                        "files the export no longer produces")
     p.add_argument("--yes", action="store_true",
                    help="Actually upload. Without it, only reports what would happen.")
     add_logging_flags(p)
@@ -42,6 +45,7 @@ def main() -> None:
         url = push_season(
             str(path), args.repo_id,
             token=args.token, private=args.private, commit_message=args.message,
+            season=args.season,
         )
     except PublishError as e:
         raise SystemExit(f"error: {e}") from None

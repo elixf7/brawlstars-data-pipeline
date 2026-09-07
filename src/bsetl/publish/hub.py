@@ -22,6 +22,23 @@ def resolve_token(token: str | None = None) -> str:
     return token
 
 
+#: Files under data/ that predate season partitioning. The exporter cannot
+#: produce this shape any more, so removing it on publish migrates the dataset
+#: without a separate step.
+LEGACY_PREFIXES = ("data/battle_date=**",)
+
+
+def _delete_patterns(season: str | None) -> list[str] | None:
+    """Remote paths this publish is allowed to remove.
+
+    Scoped to the season being published plus the retired flat layout, so other
+    seasons are never touched.
+    """
+    if season is None:
+        return None
+    return [f"data/season={season}/**", *LEGACY_PREFIXES]
+
+
 def push_season(
     local_dir: str,
     repo_id: str,
@@ -29,10 +46,16 @@ def push_season(
     token: str | None = None,
     private: bool = False,
     commit_message: str | None = None,
+    season: str | None = None,
 ) -> str:
     """Upload `local_dir` to a dataset repo, creating it if needed.
 
-    Returns the dataset URL.
+    When `season` is given, the remote copy of that season is made to match the
+    local export exactly — files no longer produced are removed. Uploading alone
+    only ever adds, so a change in layout leaves the old files behind and a
+    reader globbing the dataset sees two incompatible partition schemes at once.
+
+    Only that season's prefix is touched, so other seasons are untouched.
     """
     try:
         from huggingface_hub import HfApi
@@ -55,6 +78,7 @@ def push_season(
         repo_id=repo_id,
         repo_type="dataset",
         commit_message=commit_message or f"Publish {path.name}",
+        delete_patterns=_delete_patterns(season),
     )
     url = f"https://huggingface.co/datasets/{repo_id}"
     logger.info("Published: %s", url)

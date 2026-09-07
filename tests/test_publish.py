@@ -59,13 +59,39 @@ def test_partition_key(ts, expected):
     assert _partition_key(ts) == expected
 
 
-def test_export_partitions_by_day(db, tmp_path):
+def test_a_season_is_one_file(db, tmp_path):
+    """Rows are time-ordered and Parquet keeps per-row-group bounds, so a date
+    range still skips groups without needing a directory per day."""
     out = tmp_path / "data"
-    result = export_matches_to_parquet(db, str(out))
+    result = export_matches_to_parquet(db, str(out), season="season43")
     assert result.rows == 3
+    assert result.files == 1
+    assert (out / "season=season43" / "data.parquet").is_file()
+    # The days covered are still reported, for the metadata sidecar.
     assert sorted(result.partitions) == ["2025-11-02", "2025-11-03"]
-    # Two sets on the same day share one file rather than fragmenting.
+
+
+def test_day_partitioning_is_still_available(db, tmp_path):
+    out = tmp_path / "data"
+    result = export_matches_to_parquet(db, str(out), season="season43",
+                                       partition="day")
     assert result.files == 2
+    assert (out / "season=season43" / "battle_date=2025-11-02").is_dir()
+
+
+def test_an_unknown_partitioning_is_rejected(db, tmp_path):
+    with pytest.raises(ValueError, match="season.*day"):
+        export_matches_to_parquet(db, str(tmp_path / "d"), partition="hour")
+
+
+def test_rows_are_written_in_time_order(db, tmp_path):
+    """Out-of-order rows would make row-group bounds overlap and stop the
+    date filtering from pruning anything."""
+    out = tmp_path / "data"
+    export_matches_to_parquet(db, str(out), season="season43")
+    times = ds.dataset(str(out), partitioning="hive").to_table(
+        columns=["battle_time"])["battle_time"].to_pylist()
+    assert times == sorted(times)
 
 
 def test_exported_rows_round_trip(db, tmp_path):
@@ -176,18 +202,13 @@ def test_publishing_an_empty_directory_is_refused(tmp_path, monkeypatch):
 
 
 # ------------------------------------------------- seasons must accumulate
-def test_export_nests_under_a_season_partition(db, tmp_path):
-    """Publishing a new season must add to the dataset, not replace the last
-    one. Hive-style at both levels, so readers get season as a real column."""
+def test_season_is_a_real_column(db, tmp_path):
+    """Publishing a new season adds to the dataset rather than replacing the
+    last one, and readers get season as a column they can filter on."""
     out = tmp_path / "data"
-    result = export_matches_to_parquet(db, str(out), season="season43")
-
-    assert (out / "season=season43").is_dir()
-    assert sorted(result.partitions) == ["2025-11-02", "2025-11-03"]
-
+    export_matches_to_parquet(db, str(out), season="season43")
     table = ds.dataset(str(out), partitioning="hive").to_table()
     assert set(table["season"].to_pylist()) == {"season43"}
-    assert "battle_date" in table.schema.names
 
 
 def test_two_seasons_coexist(db, tmp_path):
@@ -201,3 +222,21 @@ def test_two_seasons_coexist(db, tmp_path):
 
     table = ds.dataset(str(out), partitioning="hive").to_table()
     assert set(table["season"].to_pylist()) == {"season43", "season44"}
+
+
+# ------------------------------------------------- publishing mirrors a season
+def test_publish_removes_only_this_season_and_the_retired_layout():
+    """Uploading alone only adds, so a layout change leaves the old files behind
+    and a reader sees two partition schemes at once. Other seasons must survive."""
+    from bsetl.publish.hub import _delete_patterns
+
+    pats = _delete_patterns("season53")
+    assert "data/season=season53/**" in pats
+    assert "data/battle_date=**" in pats
+    assert not any("season54" in p for p in pats)
+
+
+def test_publish_without_a_season_deletes_nothing():
+    from bsetl.publish.hub import _delete_patterns
+
+    assert _delete_patterns(None) is None
