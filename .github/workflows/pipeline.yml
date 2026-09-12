@@ -28,7 +28,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write   # only for the keepalive commit at the end of the crawl job
   pages: write
   id-token: write
 
@@ -173,6 +173,33 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
+
+      # GitHub switches off scheduled workflows in a public repository after 60
+      # days with no repository activity. A workflow *run* is not activity --
+      # only a commit is -- so a pipeline that is working perfectly turns itself
+      # off two months after the last push. This leaves an empty marker commit
+      # once the repository has been quiet long enough to be at risk, well
+      # inside the 60 days, and does nothing at all while anyone is working on
+      # it. Pushes made with GITHUB_TOKEN do not start further workflow runs,
+      # so this cannot loop.
+      # Never fail the run over this: the crawl is the job, and the next
+      # scheduled run is another attempt. Firing at 45 days leaves about four
+      # more tries before the 60-day limit, so one miss costs nothing.
+      - name: Keep the schedule alive
+        if: always() && github.event_name == 'schedule'
+        continue-on-error: true
+        run: |
+          quiet_days=$(( ( $(date +%s) - $(git log -1 --format=%ct) ) / 86400 ))
+          echo "Last commit was ${quiet_days} day(s) ago."
+          if [ "$quiet_days" -lt 45 ]; then
+            echo "Still well inside the window; nothing to do."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty \
+            -m "Keep scheduled workflows enabled (quiet for ${quiet_days} days)"
+          git push
 
       - name: Upload run summary
         if: always()
