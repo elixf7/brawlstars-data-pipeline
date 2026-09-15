@@ -3,7 +3,7 @@
 Collects ranked match data from the Brawl Stars API and publishes it as a
 versioned dataset, on a schedule, without anyone watching.
 
-Around 570,000 ranked sets per season, republished twice a week to
+Over a million ranked sets per season, republished twice a week to
 [Hugging Face](https://huggingface.co/datasets/EliF77/brawlstars-ranked).
 
 [![Ingest](https://github.com/elixf7/brawlstars-data-pipeline/actions/workflows/pipeline.yml/badge.svg)](https://github.com/elixf7/brawlstars-data-pipeline/actions/workflows/pipeline.yml)
@@ -147,14 +147,20 @@ each row group, so a reader asking for a single week still skips the rest.
 | `skill_ns` | `avg_elo` normalised against its own moment in the season |
 | `skill_ns_ok` | Whether that normalisation is trustworthy for this row |
 
-Around 2.7M sets in a full season, roughly 600 MB as SQLite and 66 MB as
-Parquet. Full column reference in [`docs/DATA_DICTIONARY.md`](docs/DATA_DICTIONARY.md).
+Season 53 reached 1.37M sets across its first four runs, about 80 MB as Parquet.
+Full column reference in [`docs/DATA_DICTIONARY.md`](docs/DATA_DICTIONARY.md).
 
 **Worth knowing before modelling on it.** The API exposes the six final
 characters but no pick order and no bans. Battle logs hold only a player's
 recent matches, so partial sets are normal — a bare `T1` is about a quarter of
-rows. And the sample is not uniform: crawling outward from seed players within an
-elo band over-represents active and higher-rated players.
+rows.
+
+And the sample is deliberately not uniform. The crawl is ordered by elo and
+revisits known high-elo players on purpose, because the top of the ladder is too
+rare to reach by sweeping outward — in season 53, sets averaging elo 19 or above
+were 0.85% of all rows. Active and higher-rated players are over-represented
+relative to the live population, by design. Reweight if you need a population
+estimate; take it as given if you are modelling strong play.
 
 ## Running it yourself
 

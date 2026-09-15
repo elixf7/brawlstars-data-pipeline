@@ -4,10 +4,24 @@ name: Maintenance
 # keeps every version — so old revisions of state/ come to outweigh the dataset.
 # Squashing discards those versions. It does not touch any current file: each
 # season lives at its own path and stays exactly as it is.
+# Weekly, on Saturday. Monthly was enough when the working database was pushed
+# twice a week at half this size; it is not now. Between squashes the Hub holds
+# every version pushed since the last one, so the interval sets how much dead
+# weight accumulates.
+#
+# Saturday is deliberate: ingest runs Monday and Thursday, so this lands in the
+# gap between them.
 on:
   schedule:
-    - cron: "0 5 1 * *"   # monthly, the 1st
+    - cron: "0 5 * * 6"
   workflow_dispatch:
+
+# Squashing rewrites the dataset repo's history. A crawl finishing its state
+# push into a repo whose history moved underneath it is a bad way to find that
+# out, so this shares the ingest lock and waits its turn.
+concurrency:
+  group: bsetl-ingest
+  cancel-in-progress: false
 
 jobs:
   squash-hub-history:

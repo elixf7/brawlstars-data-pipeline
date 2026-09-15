@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+from datetime import UTC, datetime
 
 from bsetl.transform.seasons import (
     current_season,
@@ -30,7 +30,7 @@ def main() -> None:
 
     if args.command == "current":
         label = current_season()
-        n = season_number_at(datetime.now().date())
+        n = season_number_at(datetime.now(UTC))
         start, end = season_bounds(n)
         if args.format == "label":
             print(label)

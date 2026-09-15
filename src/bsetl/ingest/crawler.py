@@ -1,4 +1,5 @@
 import asyncio
+import heapq
 import json
 import os
 import sqlite3
@@ -12,13 +13,13 @@ try:
     from tqdm import tqdm
 except Exception:  # fallback in some notebook environments
     from tqdm.notebook import tqdm
-from collections import deque
 
 from bsetl.ingest.budget import CrawlStats, Outcome, RunBudget, StopReason
 from bsetl.ingest.ratelimit import AsyncRateLimiter
 from bsetl.logconfig import get_logger, progress_enabled
 from bsetl.state.frontier import load_frontier, save_frontier
 from bsetl.state.runs import finish_run, start_run
+from bsetl.state.seeding import high_elo_tags
 from bsetl.transform.records import record_is_well_formed
 from bsetl.transform.schema import (
     create_fetched_tags_table_if_not_exists,
@@ -64,6 +65,16 @@ RECORD_INDEX = 4
 #: Dropping a trickle of merged sets is routine; dropping a large share means
 #: set grouping has broken and the data is not what it claims to be.
 MAX_MALFORMED_RATE = 0.01
+
+
+def _priority(tag: str, depth: int, elo: int | None) -> tuple:
+    """Heap key: highest elo first, then shallowest.
+
+    A seed has no observed elo and sorts last, which costs nothing — the only
+    run where seeds matter is a season's first, and there the frontier holds
+    nothing else.
+    """
+    return (-(elo if elo is not None else -1), depth, tag, elo)
 
 
 def is_string_date_after(reference_dt, date_string):
@@ -552,13 +563,22 @@ async def process_tags_and_write_async(
     budget: RunBudget | None = None,
     resume: bool = True,
     record_run: bool = True,
+    high_elo_floor: float | None = None,
+    reservoir_limit: int = 50_000,
 ) -> CrawlStats:
-    """Depth-limited BFS over ranked battle logs, bounded by `budget`.
+    """Best-first crawl over ranked battle logs, bounded by `budget`.
 
     Enqueue policy: follow a discovered player only if their observed elo falls
     in [elo_queue_min, elo_queue_max]. Build policy: keep a set only if its
     average elo falls in [elo_game_min, elo_game_max]. These are deliberately
     separate — see docs/DESIGN.md.
+
+    `high_elo_floor` is what keeps the top of the ladder reachable, and it does
+    two things. A player at or above it is followed regardless of `max_depth`,
+    so a chain of strong players is never cut off mid-way; and at the start of
+    every run, players already known to be above it are put back on the queue
+    once their battle-log window has turned over. Both exist because high-elo
+    matches are far too rare to find by sweeping outward and hoping.
 
     The run resumes from and writes back a persistent frontier, so a sequence of
     short bounded runs behaves as one long crawl. Returns the run's CrawlStats.
@@ -569,10 +589,10 @@ async def process_tags_and_write_async(
     stats = CrawlStats(budget=budget or RunBudget())
     stop_reason: StopReason | None = None
     status = "failed"
-    queue: deque = deque()
-    requeue: list[tuple[str, int]] = []
+    queue: list[tuple] = []
+    requeue: list[tuple[str, int, int | None]] = []
 
-    pending: list[tuple[str, int]] = []
+    pending: list[tuple[str, int, int | None]] = []
     if resume and clean_db_path:
         pending = load_frontier(clean_db_path)
 
@@ -593,6 +613,7 @@ async def process_tags_and_write_async(
                 "flush_every_n_batches": flush_every_n_batches,
                 "budget": vars(stats.budget),
                 "resumed_frontier": len(pending),
+                "high_elo_floor": high_elo_floor,
             },
             frontier_before=len(pending),
         )
@@ -689,13 +710,44 @@ async def process_tags_and_write_async(
                         filtered.append(t)
                 initial_tags = filtered
 
-            # Resumed frontier first, then any new seeds not already pending.
-            queue = deque(pending)
-            enqueued = {t for t, _ in pending}
+            # One priority queue over the resumed frontier, any new seeds, and
+            # the high-elo players already known from earlier runs. Ordering is
+            # by elo, so where a tag came from does not decide when it is
+            # crawled — only how strong the player is.
+            queue = [_priority(t, d, e) for t, d, e in pending]
+            enqueued = {t for t, _, _ in pending}
             for t in initial_tags:
                 if t not in enqueued:
-                    queue.append((t, 0))
+                    queue.append(_priority(t, 0, None))
                     enqueued.add(t)
+
+            # Revisiting known high-elo players is the single cheapest source of
+            # high-elo matches: their logs are dense with them, where a tag
+            # picked off the frontier at random is not. Only those whose window
+            # has turned over are worth the request.
+            if high_elo_floor is not None and clean_db_path and os.path.exists(clean_db_path):
+                _stale = None
+                if fetched_tags_ttl_hours > 0.0:
+                    from datetime import timedelta
+                    _stale = (
+                        datetime.now(UTC) - timedelta(hours=fetched_tags_ttl_hours)
+                    ).isoformat()
+                refreshed = 0
+                for t in high_elo_tags(
+                    clean_db_path, high_elo_floor, reservoir_limit, stale_before=_stale
+                ):
+                    if t not in enqueued and t not in visited_tags:
+                        # Depth 0: these are roots in their own right, and their
+                        # neighbours are the players worth reaching next.
+                        queue.append(_priority(t, 0, int(high_elo_floor)))
+                        enqueued.add(t)
+                        refreshed += 1
+                logger.info(
+                    "Re-queued %d known player(s) at elo >= %s for refresh",
+                    refreshed, high_elo_floor,
+                )
+
+            heapq.heapify(queue)
 
             pbar_bfs = tqdm(desc="BFS: fetching logs", total=0, dynamic_ncols=True,
                             disable=not progress_enabled())
@@ -707,36 +759,51 @@ async def process_tags_and_write_async(
 
                 batch = []
                 while queue and len(batch) < batch_size:
-                    batch.append(queue.popleft())
+                    _, depth, tag, elo = heapq.heappop(queue)
+                    batch.append((tag, depth, elo))
 
                 tasks = []
-                for (tag, depth) in batch:
+                for (tag, depth, elo) in batch:
                     if tag not in visited_tags:
                         visited_tags.add(tag)
-                        tasks.append((tag, depth))
+                        tasks.append((tag, depth, elo))
                 if not tasks:
                     continue
 
                 results = await asyncio.gather(*[
                     fetch_battle_log_async(t, api_key, session, semaphore, rate_limiter, stats)
-                    for (t, _) in tasks
+                    for (t, _, _) in tasks
                 ])
 
-                for (tag, depth), battle_log in zip(tasks, results, strict=True):
+                for (tag, depth, elo), battle_log in zip(tasks, results, strict=True):
                     if battle_log is BUDGET_SKIP or battle_log is FETCH_FAILED:
                         # BUDGET_SKIP: never asked. FETCH_FAILED: asked and every
                         # retry failed. Either way the tag is unanswered, so it
                         # returns to the frontier instead of counting as empty.
                         visited_tags.discard(tag)
-                        requeue.append((tag, depth))
+                        requeue.append((tag, depth, elo))
                         continue
                     if battle_log:
                         logs_dict[tag] = battle_log
                         for nt, elo_val in get_all_solo_ranked_tags_with_elos(battle_log):
                             discovered_tags_set.add(nt)
-                            if depth < max_depth and _is_elo_in_range(elo_val, elo_queue_min, elo_queue_max):
+                            if not _is_elo_in_range(elo_val, elo_queue_min, elo_queue_max):
+                                continue
+                            # The depth cap bounds how far the crawl wanders
+                            # from its seeds, which is what stops it drifting
+                            # into the bulk of the ladder. Strong players are
+                            # the exception: they are the target, so reaching
+                            # one is a reason to keep going, not to stop.
+                            exempt = (
+                                high_elo_floor is not None
+                                and elo_val is not None
+                                and elo_val >= high_elo_floor
+                            )
+                            if depth < max_depth or exempt:
                                 if nt not in visited_tags and nt not in enqueued:
-                                    queue.append((nt, depth + 1))
+                                    heapq.heappush(
+                                        queue, _priority(nt, depth + 1, elo_val)
+                                    )
                                     enqueued.add(nt)
 
                 pbar_bfs.update(len(tasks))
@@ -806,7 +873,7 @@ async def process_tags_and_write_async(
             logger.error("Could not salvage rows after failure: %s", e)
         raise
     finally:
-        remaining = requeue + list(queue)
+        remaining = requeue + [(t, d, e) for _, d, t, e in queue]
         logger.info(
             "Crawl finished (%s): %d requests, %d rows inserted, %d tag(s) left on the frontier",
             stop_reason or "unknown", stats.requests_made, stats.rows_inserted, len(remaining),

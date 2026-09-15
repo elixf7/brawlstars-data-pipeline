@@ -112,8 +112,9 @@ uv run bsetl-season current
 ## 5. Provide seed tags for the first crawl
 
 A season's first run needs somewhere to start. Afterwards each run resumes the
-stored frontier, so this is once per season — and once the pipeline is running,
-later seasons can be seeded from the previous one.
+stored frontier, so this is **once, ever**: from the second season onward the
+pipeline seeds itself from the strongest players of the season before, and
+rollover needs no attention.
 
 Find your own player tag in-game (profile, top left, e.g. `#9UUU9QVU`), then:
 
@@ -122,13 +123,13 @@ mkdir -p seeds
 printf '#YOURTAG\n' > "seeds/$(uv run bsetl-season current --format label).txt"
 ```
 
-A handful of tags is enough — breadth-first expansion reaches thousands of players
-within one run. If you have an older season database, sample from it instead for
-better spread:
+A handful of tags is enough — expansion reaches thousands of players within one
+run. If you have an older season database, sample the strongest players from it
+instead, which is what the pipeline does for itself at every later reset:
 
 ```python
-from bsetl.state import sample_seed_tags_from_clean_db
-tags = sample_seed_tags_from_clean_db("path/to/old.db", num_tags=500, elo_range=(15, 23))
+from bsetl.state import high_elo_tags
+tags = high_elo_tags("path/to/old.db", min_elo=18, limit=5000)
 ```
 
 Commit the file — player tags are public in-game identifiers.

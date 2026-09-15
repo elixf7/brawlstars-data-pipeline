@@ -96,7 +96,7 @@ def test_export_partitions_cover_every_day(season, tmp_path):
 def test_clean_sqlite_keeps_the_data_and_the_index(season, tmp_path):
     from bsetl.state.frontier import save_frontier
 
-    save_frontier(season, [("#PENDING", 1)])
+    save_frontier(season, [("#PENDING", 1, 17)])
     out = str(tmp_path / "clean.db")
     export_clean_sqlite(season, out)
 
