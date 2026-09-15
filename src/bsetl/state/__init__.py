@@ -2,11 +2,12 @@
 
 from bsetl.state.frontier import frontier_size, load_frontier, save_frontier
 from bsetl.state.runs import finish_run, recent_runs, start_run
-from bsetl.state.seeding import sample_seed_tags_from_clean_db
+from bsetl.state.seeding import high_elo_tags, sample_seed_tags_from_clean_db
 
 __all__ = [
     "finish_run",
     "frontier_size",
+    "high_elo_tags",
     "load_frontier",
     "recent_runs",
     "sample_seed_tags_from_clean_db",

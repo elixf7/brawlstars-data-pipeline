@@ -134,7 +134,7 @@ def test_clean_sqlite_drops_pipeline_state_only(db, tmp_path):
     from bsetl.state.frontier import save_frontier
     from bsetl.state.runs import start_run
 
-    save_frontier(db, [("#X", 0)])
+    save_frontier(db, [("#X", 0, None)])
     start_run(db, {"note": "test"})
     conn = sqlite3.connect(db)
     conn.execute("CREATE TABLE IF NOT EXISTS fetched_tags (tag TEXT PRIMARY KEY, fetched_utc TEXT)")

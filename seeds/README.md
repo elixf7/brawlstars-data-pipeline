@@ -3,21 +3,22 @@
 Player tags a season's **first** crawl starts from, one per line, with the
 leading `#`. Named `<season>.txt`, matching what `bsetl-season current` reports.
 
-Later runs do not need this file. Once a crawl has run, unvisited tags live in
-the `crawl_frontier` table inside the season database, and each scheduled run
-resumes from there — the workflow logs a note and carries on if the file is
-absent.
+**You do not normally need to put anything here.** A season with no stored state
+is seeded automatically from the strongest players of the season before it, so a
+reset needs no attention:
 
-A useful set of seeds is a few hundred tags spread across the target elo band.
-Sample them from a previous season rather than inventing them:
-
-```python
-from bsetl.state import sample_seed_tags_from_clean_db
-
-tags = sample_seed_tags_from_clean_db(
-    "data/seasons/season49/v1.db", num_tags=500, elo_range=(15, 23)
-)
-Path("seeds/season50.txt").write_text("\n".join(tags) + "\n")
+```bash
+uv run bsetl-state seeds --repo-id "$DATASET_REPO" --season season54 \
+  --out seeds/season54.txt --min-elo 18 --limit 5000
 ```
+
+That is the step the workflow runs on the first run of each season. Elo resets
+along with the season, so those players start low and climb back — what carries
+across is who they are, not what they were rated.
+
+A committed `<season>.txt` takes precedence when one exists, which is how to
+override the choice for a particular season. Later runs need neither: unvisited
+tags live in the `crawl_frontier` table inside the season database, and each
+scheduled run resumes from there.
 
 Tags are public in-game identifiers, so committing them is fine.

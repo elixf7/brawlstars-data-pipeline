@@ -74,6 +74,15 @@ def main() -> None:
     p.add_argument("--elo-queue-max", type=float, default=None)
     p.add_argument("--elo-game-min", type=float, default=None)
     p.add_argument("--elo-game-max", type=float, default=None)
+    p.add_argument("--high-elo-floor", type=float, default=None,
+                   help="Players at or above this elo are followed past --max-depth, "
+                        "and known ones are re-queued each run once their battle-log "
+                        "window has turned over. This is what keeps the top of the "
+                        "ladder represented; without it the crawl drifts into the "
+                        "bulk of the player base, which is where most players are.")
+    p.add_argument("--reservoir-limit", type=int, default=50000,
+                   help="Most known high-elo players to re-queue at the start of a "
+                        "run. A ceiling, so refreshing cannot crowd out new ground.")
     p.add_argument("--fetched-tags-ttl-hours", type=float, default=0.0,
                    help="Skip tags fetched within this many hours (0 = disabled)")
     p.add_argument("--flush-every-n-batches", type=int, default=0,
@@ -166,6 +175,8 @@ def main() -> None:
             flush_every_n_batches=args.flush_every_n_batches,
             budget=budget,
             resume=not args.no_resume,
+            high_elo_floor=args.high_elo_floor,
+            reservoir_limit=args.reservoir_limit,
         )
 
     # Either mint a key for this host and revoke it on the way out, or use the

@@ -165,5 +165,5 @@ async def test_a_run_that_cannot_reach_the_api_keeps_its_frontier(monkeypatch, t
     assert stats.rows_inserted == 0
     assert stats.outcomes.get("error", 0) > 0
     # Every seed is unanswered, so every seed survives for the next run.
-    assert sorted(t for t, _ in load_frontier(db)) == ["#A", "#B", "#C"]
+    assert sorted(t for t, _, _ in load_frontier(db)) == ["#A", "#B", "#C"]
     assert recent_runs(db)[0]["frontier_after"] == 3

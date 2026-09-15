@@ -14,7 +14,7 @@ on:
       max_requests:
         description: "API request ceiling for this run"
         required: false
-        default: "150000"
+        default: "280000"
       publish:
         description: "Publish the dataset if the quality gate passes"
         type: boolean
@@ -37,7 +37,10 @@ env:
   SEASON_OVERRIDE: ${{ inputs.season }}
   DATASET_REPO: ${{ vars.BSETL_DATASET_REPO }}
   DB_PATH: data/seasons/working.db
-  MAX_REQUESTS: ${{ inputs.max_requests || '150000' }}
+  MAX_REQUESTS: ${{ inputs.max_requests || '280000' }}
+  # seeds/<season>.txt when committed; otherwise written from the previous
+  # season at the start of a new one.
+  SEED_FILE: seeds/auto.txt
 
 jobs:
   crawl:
@@ -85,6 +88,26 @@ jobs:
             --repo-id "$DATASET_REPO" --season "$SEASON" \
             --dest "$DB_PATH" --allow-missing
 
+      # A reset leaves an empty database, and there is no endpoint that lists
+      # players, so a new season cannot start without seed tags. Only runs when
+      # the restore above found nothing, which is exactly the first run of a
+      # season. A committed seeds/<season>.txt still wins if one exists.
+      - name: Seed a new season
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -f "$DB_PATH" ]; then
+            echo "Resuming $SEASON; no seeding needed."
+            : > "$SEED_FILE"
+          elif [ -f "seeds/${SEASON}.txt" ]; then
+            echo "Using committed seeds/${SEASON}.txt"
+            cp "seeds/${SEASON}.txt" "$SEED_FILE"
+          else
+            uv run bsetl-state seeds \
+              --repo-id "$DATASET_REPO" --season "$SEASON" \
+              --out "$SEED_FILE" --min-elo 18 --limit 5000
+          fi
+
       # --provision-key signs in to the developer portal, mints a key scoped to
       # this runner's address, and revokes it when the run ends. No long-lived
       # key exists to leak.
@@ -97,14 +120,15 @@ jobs:
           uv run bsetl-ingest \
             --provision-key \
             --clean-db-path "$DB_PATH" \
-            --tags-file seeds/${SEASON}.txt \
+            --tags-file "$SEED_FILE" \
             --latest-runtime "$SEASON_START" \
             --max-depth 3 \
             --elo-queue-min 13 --elo-queue-max 23 \
+            --high-elo-floor 18 \
             --elo-game-min 12 --elo-game-max 23 \
             --fetched-tags-ttl-hours 24 \
             --flush-every-n-batches 1 \
-            --requests-per-second 15 \
+            --requests-per-second 20 \
             --max-requests "$MAX_REQUESTS" \
             --max-seconds 14400 \
             --min-rows-per-1k-requests 50 \
@@ -161,6 +185,19 @@ jobs:
         run: |
           uv run bsetl-state push \
             --repo-id "$DATASET_REPO" --season "$SEASON" --db-path "$DB_PATH"
+
+      # A published season is never crawled again, so its working database is
+      # dead weight — and squashing cannot reclaim it, because it is a current
+      # file rather than an old version. The season before this one is kept:
+      # it is what the next season gets seeded from.
+      - name: Prune retired season state
+        if: always() && github.event_name == 'schedule'
+        continue-on-error: true
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          uv run bsetl-state prune \
+            --repo-id "$DATASET_REPO" --season "$SEASON" --keep-previous 1
 
       # Rendered from the database itself, so the page cannot claim anything
       # the data does not support.
