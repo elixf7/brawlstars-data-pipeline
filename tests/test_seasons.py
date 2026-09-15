@@ -3,21 +3,24 @@
 The dates below were checked against Supercell's Ranked 2.0 schedule and
 against two real databases whose daily mean elo steps down on exactly the
 predicted day."""
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 
 from bsetl.transform.seasons import (
     ANCHOR_NUMBER,
     ANCHOR_START,
+    RESET_UTC_HOUR,
     current_season,
     days_until_next_season,
+    parse_battle_instant,
     season_bounds,
     season_for_battle_time,
     season_for_database,
     season_label,
     season_number_at,
     season_start,
+    season_start_instant,
     season_start_iso,
     seasons_spanned,
     third_thursday,
@@ -83,7 +86,7 @@ def test_battle_time_maps_to_a_season():
 def test_season_start_iso_bounds_ingestion():
     """Passed to --latest-runtime so post-rollover crawls do not pull pre-reset
     matches into the new season's database."""
-    assert season_start_iso(43) == "2025-10-16T00:00:00Z"
+    assert season_start_iso(43) == "2025-10-16T09:00:00Z"
 
 
 def test_current_season_is_consistent_with_its_own_bounds():
@@ -143,3 +146,50 @@ def test_a_database_spanning_a_reset_is_visible(tmp_path):
 
 def test_missing_database_is_handled(tmp_path):
     assert season_for_database(str(tmp_path / "nope.db")) is None
+
+
+# ------------------------------------------------------- the reset is a moment
+def test_the_reset_is_nine_in_the_morning_not_midnight():
+    """Supercell announces the rollover as 9 AM UTC, and the data agrees: across
+    the October 2025 reset the mean average elo of a match runs 15-16 through
+    the 15th and is 2.1 by 09:00 on the 16th."""
+    assert RESET_UTC_HOUR == 9
+    assert season_start_instant(43) == datetime(2025, 10, 16, 9, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("stamp,expected", [
+    ("20251016T085959.000Z", "season42"),  # the last minute of the old season
+    ("20251016T090000.000Z", "season43"),  # the reset itself
+    ("20251016T235959.000Z", "season43"),
+    ("20251015T235959.000Z", "season42"),
+])
+def test_reset_day_matches_land_on_the_right_side(stamp, expected):
+    """Nine hours of play on reset day belong to the season that is ending. Read
+    as midnight they would be pulled into the new season, at the old season's
+    elo, straight into its first skill_ns bin."""
+    assert season_for_battle_time(stamp) == expected
+
+
+def test_a_date_alone_still_resolves_to_the_reset_day():
+    """Plain dates keep their old meaning, so callers that only have a day are
+    not silently given an answer nine hours off."""
+    assert season_number_at(date(2025, 10, 16)) == 43
+    assert season_number_at(date(2025, 10, 15)) == 42
+
+
+def test_the_live_season_on_reset_morning_is_the_one_ending():
+    """A run that fires before 09:00 on reset day must keep collecting the
+    season that is ending. Resolving to the new one would open an empty
+    database for a season that has not started, and abandon the old one's
+    final hours."""
+    assert current_season(datetime(2025, 10, 16, 6, tzinfo=UTC)) == "season42"
+    assert current_season(datetime(2025, 10, 16, 9, tzinfo=UTC)) == "season43"
+
+
+def test_a_naive_datetime_is_read_as_utc():
+    assert season_number_at(datetime(2025, 10, 16, 8)) == 42
+
+
+@pytest.mark.parametrize("stamp", ["garbage", "", None, "2025"])
+def test_unparseable_timestamps_stay_none(stamp):
+    assert parse_battle_instant(stamp) is None

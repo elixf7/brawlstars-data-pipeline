@@ -124,6 +124,29 @@ The floor is separate from `--elo-queue-min`, which stays low on purpose. Tags
 below the floor are not discarded, they wait, and they are the breadth the crawl
 falls back on when the strong tags run out.
 
+## A season boundary is a moment, not a day
+
+Ranked resets on the third Thursday of each month **at 09:00 UTC**, and the time
+of day matters twice.
+
+Read as midnight, the boundary pulls the nine hours of pre-reset play on reset
+day into the new season — matches at the old season's elo, landing in the first
+`skill_ns` bin of the next, where they are least diluted. Season 53 has four
+such rows, stamped between 08:31 and 08:47 on its own start date.
+
+The same nine hours decide which season a *run* belongs to. A scheduled run
+firing on reset morning before 09:00 that resolves to the new season would open
+an empty database for a season that has not started, collect nothing, and
+abandon the final hours of the one that was still live. So `current_season` is
+resolved to the instant, and `--latest-runtime` carries the reset time rather
+than a date.
+
+The hour is in `RESET_UTC_HOUR`, alongside the `OVERRIDES` table for schedule
+changes. It was not guessed: Supercell announces the rollover as 9 AM UTC, and
+the October 2025 reset is visible in this repository's own season42 fixture —
+the mean average elo of a match runs 15-16 through the 15th and is 2.1 by 09:00
+on the 16th, the whole ladder back at the floor.
+
 ## Elo is not comparable across a season
 
 Ranked elo resets at season start and re-stratifies over the following weeks. An

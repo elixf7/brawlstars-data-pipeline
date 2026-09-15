@@ -105,6 +105,47 @@ def download_state(
     return True
 
 
+def drop_foreign_seasons(db_path: str | Path, season: str) -> int:
+    """Delete matches outside `season`'s window. Returns how many went.
+
+    Stored state can hold rows the current rules would not have accepted —
+    ingest is bounded by whatever `--latest-runtime` said at the time, and that
+    boundary has been wrong before: read as midnight rather than 09:00, it let
+    in the nine hours of pre-reset play on reset day.
+
+    The quality gate fails a database that spans a reset, and rightly so. But a
+    correction to the season rules must not leave the pipeline stuck behind its
+    own gate over rows it now knows are misplaced, so restoring state reconciles
+    them rather than waiting for someone to notice a red run.
+    """
+    import sqlite3
+
+    from bsetl.transform.seasons import season_bounds_stamps
+
+    try:
+        number = int(season.removeprefix("season"))
+    except ValueError:
+        return 0
+    lo, hi = season_bounds_stamps(number)
+    conn = sqlite3.connect(db_path)
+    try:
+        n = conn.execute(
+            "DELETE FROM matches WHERE battle_time IS NULL "
+            "OR battle_time < ? OR battle_time >= ?", (lo, hi),
+        ).rowcount
+        conn.commit()
+    except sqlite3.OperationalError:
+        return 0  # no matches table yet
+    finally:
+        conn.close()
+    if n:
+        logger.warning(
+            "Dropped %d row(s) from restored %s state outside %s..%s; "
+            "they belong to an adjacent season", n, season, lo, hi,
+        )
+    return n
+
+
 def pull_state(
     repo_id: str, season: str, dest: str, *, token: str | None = None
 ) -> bool:
@@ -121,6 +162,8 @@ def pull_state(
     if not _schema_is_current(dest_path, season):
         dest_path.unlink()
         return False
+
+    drop_foreign_seasons(dest_path, season)
 
     logger.info("Restored %s (%.1f MB) from %s",
                 season, dest_path.stat().st_size / 1e6, repo_id)

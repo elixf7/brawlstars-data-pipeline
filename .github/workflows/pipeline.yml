@@ -64,8 +64,10 @@ jobs:
         run: |
           test -n "$DATASET_REPO" || { echo "::error::Set the BSETL_DATASET_REPO repository variable"; exit 1; }
 
-      # Ranked resets on the third Thursday of each month, so the current
-      # season is arithmetic. Rollover is automatic and cannot be forgotten.
+      # Ranked resets on the third Thursday of each month at 09:00 UTC, so the
+      # current season is arithmetic. Rollover is automatic and cannot be
+      # forgotten. The hour matters: a run firing before 09:00 on reset day
+      # belongs to the season that is ending, and must keep collecting it.
       # SEASON_START bounds ingestion: battle logs fetched just after a reset
       # still hold pre-reset matches, which belong to the previous season.
       - name: Resolve season
@@ -111,6 +113,11 @@ jobs:
       # --provision-key signs in to the developer portal, mints a key scoped to
       # this runner's address, and revokes it when the run ends. No long-lived
       # key exists to leak.
+      # --max-database-rows is a backstop, and the number comes from the runner
+      # rather than from the data: at ~360 bytes a set, 12M sets is a 4.3 GB
+      # working database, which doubles transiently while it is vacuumed before
+      # upload. That peak plus the Parquet export fits a 14 GB runner with room
+      # to spare; 15M would not. A season is projected to reach roughly 4M.
       - name: Crawl
         id: crawl
         env:
@@ -134,7 +141,7 @@ jobs:
             --min-rows-per-1k-requests 50 \
             --yield-grace-requests 8000 \
             --yield-window-requests 4000 \
-            --max-database-rows 10000000 \
+            --max-database-rows 12000000 \
             > run-summary.json
           cat run-summary.json
 

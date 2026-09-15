@@ -345,3 +345,62 @@ async def test_a_strong_player_is_followed_past_the_depth_cap(tmp_path, monkeypa
 @pytest.mark.asyncio
 async def test_without_a_floor_the_cap_is_absolute(tmp_path, monkeypatch):
     assert await _crawl_one(tmp_path, monkeypatch, high_elo_floor=None) == set()
+
+
+# ------------------------------------------- reconciling a corrected boundary
+def _season_db(path, stamps):
+    conn = sqlite3.connect(path)
+    create_matches_table_if_not_exists(conn)
+    conn.executemany(get_matches_insert_statement(),
+                     [a_row(s, f"#P{i}", [(f"#P{i}", 15)]) for i, s in enumerate(stamps)])
+    conn.commit()
+    conn.close()
+
+
+def test_restored_state_sheds_matches_from_the_neighbouring_season(tmp_path):
+    """season53 really did hold four rows stamped before its own 09:00 reset —
+    accepted when the boundary was read as midnight. The gate fails a database
+    that spans a reset, so a correction to the season rules has to reconcile the
+    state it invalidates, or the pipeline stalls behind its own gate."""
+    from bsetl.publish.state import drop_foreign_seasons
+
+    p = str(tmp_path / "season54.db")
+    _season_db(p, [
+        "20260917T083134.000Z",   # reset day, before 09:00 -> season53
+        "20260917T085959.000Z",   # the last second of season53
+        "20260917T090000.000Z",   # the reset itself -> season54
+        "20260920T120000.000Z",   # comfortably season54
+    ])
+    assert drop_foreign_seasons(p, "season54") == 2
+    conn = sqlite3.connect(p)
+    kept = [r[0] for r in conn.execute("SELECT battle_time FROM matches ORDER BY battle_time")]
+    conn.close()
+    assert kept == ["20260917T090000.000Z", "20260920T120000.000Z"]
+
+
+def test_reconciling_leaves_a_clean_season_alone(tmp_path):
+    from bsetl.publish.state import drop_foreign_seasons
+
+    p = str(tmp_path / "season54.db")
+    _season_db(p, ["20260918T120000.000Z", "20260919T120000.000Z"])
+    assert drop_foreign_seasons(p, "season54") == 0
+
+
+def test_a_reconciled_database_no_longer_spans_a_reset(tmp_path):
+    """The condition the quality gate actually checks."""
+    from bsetl.publish.state import drop_foreign_seasons
+    from bsetl.transform.seasons import seasons_spanned
+
+    p = str(tmp_path / "season54.db")
+    _season_db(p, ["20260917T083134.000Z", "20260920T120000.000Z"])
+    assert seasons_spanned(p) == ["season53", "season54"]
+    drop_foreign_seasons(p, "season54")
+    assert seasons_spanned(p) == ["season54"]
+
+
+def test_reconciling_an_empty_database_is_harmless(tmp_path):
+    from bsetl.publish.state import drop_foreign_seasons
+
+    p = str(tmp_path / "empty.db")
+    sqlite3.connect(p).close()
+    assert drop_foreign_seasons(p, "season54") == 0
