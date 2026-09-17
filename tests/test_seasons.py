@@ -3,10 +3,11 @@
 The dates below were checked against Supercell's Ranked 2.0 schedule and
 against two real databases whose daily mean elo steps down on exactly the
 predicted day."""
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from bsetl.transform import seasons
 from bsetl.transform.seasons import (
     ANCHOR_NUMBER,
     ANCHOR_START,
@@ -193,3 +194,70 @@ def test_a_naive_datetime_is_read_as_utc():
 @pytest.mark.parametrize("stamp", ["garbage", "", None, "2025"])
 def test_unparseable_timestamps_stay_none(stamp):
     assert parse_battle_instant(stamp) is None
+
+
+class TestOpeningYieldFloor:
+    """The yield floor has to know how much season there is to crawl.
+
+    Season 54 reset at 09:00 UTC on 2026-09-17; its first scheduled run began at
+    10:37 and stopped 25 minutes later on a yield of 48.9 against a floor of 50,
+    leaving 26,748 tags on the frontier. Nothing was wrong with the crawl — only
+    1.6 hours of ranked play existed above the season boundary.
+    """
+
+    def test_first_hours_of_a_season_barely_constrain_yield(self):
+        just_after_reset = datetime(2026, 9, 17, 10, 37, tzinfo=UTC)
+        assert seasons.opening_yield_floor(50, just_after_reset) == 1
+
+    def test_floor_climbs_as_the_season_fills(self):
+        day_two = datetime(2026, 9, 18, 22, 0, tzinfo=UTC)   # ~37h in
+        day_four = datetime(2026, 9, 20, 22, 0, tzinfo=UTC)  # ~85h in
+        assert seasons.opening_yield_floor(50, day_two) == 25
+        assert seasons.opening_yield_floor(50, day_four) == 50
+
+    def test_steady_state_once_the_window_has_turned_over(self):
+        mid_season = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
+        assert seasons.opening_yield_floor(50, mid_season) == 50
+        assert seasons.opening_yield_floor(80, mid_season) == 80
+
+    def test_the_floor_that_stopped_run_one_would_not_have(self):
+        """37 hours in, a crawl yielding 48.9 keeps going."""
+        day_two = datetime(2026, 9, 18, 22, 0, tzinfo=UTC)
+        assert seasons.opening_yield_floor(50, day_two) < 48.9
+
+    def test_age_is_measured_from_the_reset_hour_not_the_date(self):
+        before = datetime(2026, 9, 17, 8, 0, tzinfo=UTC)
+        after = datetime(2026, 9, 17, 13, 0, tzinfo=UTC)
+        # Before 09:00 the season in progress is the previous one, already weeks old.
+        assert seasons.season_age_hours(before) > seasons.OPENING_HOURS
+        assert seasons.season_age_hours(after) == pytest.approx(4.0)
+
+
+class TestSeasonOpening:
+    """The daily crawl entry fires year-round; this is what turns it away.
+
+    Season 54 reset at 09:00 UTC on 2026-09-17, season 55 on 2026-10-15.
+    """
+
+    def test_reset_day_after_the_rollover_is_opening(self):
+        assert seasons.in_season_opening(datetime(2026, 9, 17, 21, 17, tzinfo=UTC))
+
+    def test_reset_day_before_the_rollover_belongs_to_the_old_season(self):
+        # 08:00 is still season 53, which is four weeks old.
+        assert not seasons.in_season_opening(datetime(2026, 9, 17, 8, 0, tzinfo=UTC))
+
+    def test_the_whole_first_week_is_opening(self):
+        for day in range(0, 7):
+            when = datetime(2026, 9, 17, 21, 17, tzinfo=UTC) + timedelta(days=day)
+            assert seasons.in_season_opening(when), when
+
+    def test_it_stops_before_week_two(self):
+        # Day 7 is the next Thursday; week 1 is over and the draft agent's
+        # self-play weeks begin, so the ramp must already be finished.
+        assert not seasons.in_season_opening(datetime(2026, 9, 24, 21, 17, tzinfo=UTC))
+
+    def test_the_day_before_the_next_reset_is_not_opening(self):
+        assert not seasons.in_season_opening(datetime(2026, 10, 14, 21, 17, tzinfo=UTC))
+
+    def test_the_next_reset_opens_again_without_anyone_editing_anything(self):
+        assert seasons.in_season_opening(datetime(2026, 10, 15, 21, 17, tzinfo=UTC))

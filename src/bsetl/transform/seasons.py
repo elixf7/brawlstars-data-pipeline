@@ -211,6 +211,57 @@ def seasons_spanned(db_path: str) -> list[str]:
     return [season_label(n) for n in range(lo, hi + 1)]
 
 
+#: How long a season takes to fill the battle-log window that the crawl reads
+#: through. A player's log holds roughly their last 25 battles, so for the first
+#: day or so of a season most of what a fetch returns is pre-reset and gets
+#: discarded — the crawl is not saturated, it is waiting for games to be played.
+#: Measured on season 54's opening run: 1.6 hours after the reset, 28,478 player
+#: fetches produced 4,082 sets, a yield of 48.9 per 1k requests against 2,494 on
+#: the last run of season 53. Fifty times, from the clock alone.
+OPENING_HOURS = 72
+
+#: How long a season is treated as "opening", and crawled every day instead of
+#: twice a week. A season's matches are only collectable while they sit in some
+#: player's last ~25 battles, so a week missed at the start is a week missing
+#: for good: season 53 holds 1,955 sets from its first fourteen days and 1.37M
+#: from the rest. Seven days also keeps the ramp inside week 1, which is the
+#: week the draft agent already refuses to run self-play in.
+OPENING_DAYS = 7
+
+
+def season_age_hours(now: datetime | None = None) -> float:
+    """Hours since the current season's reset."""
+    now = now or datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    start = season_start_instant(season_number_at(now))
+    return max(0.0, (now - start).total_seconds() / 3600.0)
+
+
+def in_season_opening(now: datetime | None = None, days: int = OPENING_DAYS) -> bool:
+    """Whether the season in progress is new enough to want a daily crawl."""
+    return season_age_hours(now) < days * 24
+
+
+def opening_yield_floor(steady: float, now: datetime | None = None) -> int:
+    """The yield a crawl must sustain, given how much season there is to crawl.
+
+    The steady-state floor stops a saturated crawl from spending requests on
+    players it has already drained. Early in a season it measures something
+    else entirely — how little of the season has happened yet — and stops a
+    crawl that is working perfectly. Season 54's first run died at 25 minutes
+    with 26,748 tags still on the frontier.
+
+    So the floor is scaled by the season's age until the battle-log window has
+    turned over, and is the configured value from then on. This cannot let a
+    dead crawl run away: the request and time budgets still bound every run.
+    """
+    age = season_age_hours(now)
+    if age >= OPENING_HOURS:
+        return int(steady)
+    return int(steady * age / OPENING_HOURS)
+
+
 def days_until_next_season(now: date | datetime | None = None) -> int:
     now = now or datetime.now(UTC)
     day = now.date() if isinstance(now, datetime) else now
@@ -218,7 +269,8 @@ def days_until_next_season(now: date | datetime | None = None) -> int:
 
 
 __all__ = [
-    "ANCHOR_NUMBER", "ANCHOR_START", "OVERRIDES",
+    "ANCHOR_NUMBER", "ANCHOR_START", "OPENING_DAYS", "OPENING_HOURS", "OVERRIDES",
+    "in_season_opening", "opening_yield_floor", "season_age_hours",
     "current_season", "days_until_next_season", "parse_battle_date",
     "parse_battle_instant", "RESET_UTC_HOUR", "season_start_instant",
     "season_bounds", "season_for_battle_time", "season_for_database",

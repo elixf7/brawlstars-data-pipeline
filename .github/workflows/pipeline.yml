@@ -1,11 +1,28 @@
 name: Ingest
 
-# Twice a week, Monday and Thursday. Each run resumes the previous run's
-# frontier, so a series of runs behaves as one continuous crawl. Runs are long
-# because they are infrequent: ten runs have to cover a whole season.
+# One slot, 17:17 UTC, used twice a week most of the month and every day
+# during a season's first week. Each run resumes the previous run's frontier,
+# so a series of runs behaves as one continuous crawl.
+#
+# A match is only collectable while it sits in some player's last ~25 battles,
+# so a day not crawled at the start of a season is a day lost for good --
+# season 53 holds 1,955 sets from its first fourteen days and 1.37M from the
+# rest. Cron cannot say "Monday, Thursday, or the week after the third
+# Thursday", so it fires daily and the `decide` job below answers that
+# question in code.
+#
+# 17:17 rather than the old 06:00: scheduled runs on the hour landed four to
+# five hours late, 06:00 being when everyone else's crons are queued too. The
+# odd minute matters more than the hour. The hour is what keeps the chain in
+# order -- this is the only time anything publishes, and it falls after the
+# draft agent trains (05:17) and after Atlas deploys (13:17), so a crawl can
+# never land between a model and the site built from it. Atlas refuses to
+# deploy when the dataset has moved ahead of the model it is validating
+# against, which is correct, and which a crawl in that gap would trigger
+# every Monday and Thursday.
 on:
   schedule:
-    - cron: "0 6 * * 1,4"
+    - cron: "17 17 * * *"
   workflow_dispatch:
     inputs:
       season:
@@ -15,6 +32,9 @@ on:
         description: "API request ceiling for this run"
         required: false
         default: "280000"
+      min_rows_per_1k:
+        description: "Yield floor; blank lets the season's age set it"
+        required: false
       publish:
         description: "Publish the dataset if the quality gate passes"
         type: boolean
@@ -43,7 +63,41 @@ env:
   SEED_FILE: seeds/auto.txt
 
 jobs:
+  # Cheap, so the expensive job never starts on a day it should not run. Only
+  # the daily entry is conditional: Monday and Thursday are the regular
+  # schedule, and a dispatch is somebody asking for it on purpose.
+  decide:
+    runs-on: ubuntu-latest
+    outputs:
+      crawl: ${{ steps.check.outputs.crawl }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync
+      - id: check
+        # Fail loudly rather than emitting nothing: an empty output reads as
+        # "do not crawl", which is the safe answer but an invisible one.
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "Dispatched by hand; crawling."
+            echo "crawl=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          day=$(date -u +%u)          # 1 = Monday, 4 = Thursday
+          opening=$(uv run bsetl-season opening --format bool)
+          if [ "$day" = "1" ] || [ "$day" = "4" ] || [ "$opening" = "true" ]; then
+            echo "crawl=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "crawl=false" >> "$GITHUB_OUTPUT"
+          fi
+          cat "$GITHUB_OUTPUT"
+
   crawl:
+    needs: decide
+    if: needs.decide.outputs.crawl == 'true'
     runs-on: ubuntu-latest
     # Generous relative to the crawl's own 4-hour budget: the budget should end
     # the run, not the runner. GitHub caps a job at 6 hours.
@@ -75,10 +129,15 @@ jobs:
           if [ -n "$SEASON_OVERRIDE" ]; then
             echo "SEASON=$SEASON_OVERRIDE" >> "$GITHUB_ENV"
             echo "SEASON_START=1970-01-01T00:00:00Z" >> "$GITHUB_ENV"
+            echo "MIN_ROWS_PER_1K=50" >> "$GITHUB_ENV"
           else
             uv run bsetl-season current --format env >> "$GITHUB_ENV"
           fi
           uv run bsetl-season current
+          # An explicit input wins over both.
+          if [ -n "${{ inputs.min_rows_per_1k }}" ]; then
+            echo "MIN_ROWS_PER_1K=${{ inputs.min_rows_per_1k }}" >> "$GITHUB_ENV"
+          fi
 
       # The runner is ephemeral, but the crawl frontier and fetched-tag ledger
       # must persist. Missing state is normal on a season's first run.
@@ -110,6 +169,13 @@ jobs:
               --out "$SEED_FILE" --min-elo 18 --limit 5000
           fi
 
+      # --min-rows-per-1k-requests comes from the season's age rather than being
+      # a constant. The floor exists to stop a saturated crawl re-draining
+      # players it has already read; in a season's opening days it instead
+      # measures how little of the season has been played. Season 54's first
+      # run stopped after 25 minutes at 48.9 against a floor of 50, with 26,748
+      # tags still on the frontier -- it was working, there was simply only 1.6
+      # hours of ranked play in existence to find.
       # --provision-key signs in to the developer portal, mints a key scoped to
       # this runner's address, and revokes it when the run ends. No long-lived
       # key exists to leak.
@@ -138,7 +204,7 @@ jobs:
             --requests-per-second 20 \
             --max-requests "$MAX_REQUESTS" \
             --max-seconds 14400 \
-            --min-rows-per-1k-requests 50 \
+            --min-rows-per-1k-requests "$MIN_ROWS_PER_1K" \
             --yield-grace-requests 8000 \
             --yield-window-requests 4000 \
             --max-database-rows 12000000 \
@@ -259,7 +325,8 @@ jobs:
   # repository that needs a paid plan; the job is skipped harmlessly otherwise.
   publish-status-page:
     needs: crawl
-    if: always() && needs.crawl.result != 'cancelled'
+    if: >-
+      ${{ always() && contains(fromJSON('["success","failure"]'), needs.crawl.result) }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages
