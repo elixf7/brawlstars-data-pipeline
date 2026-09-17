@@ -217,6 +217,50 @@ found nothing, whereas a declined tag was never asked about and has to go back
 on the frontier. Conflating them would silently drop a slice of the frontier on
 every bounded run.
 
+## A yield floor measures the wrong thing in a season's opening days
+
+Yield collapse assumes the crawl is saturated: the neighbourhood has been
+drained, and further requests return rows already held. That assumption is
+sound for all but the first days of a season, and badly wrong for those.
+
+A crawl only ever sees a player's last ~25 battles, and everything before the
+reset is discarded as belonging to the previous season. So the yield of a run
+is bounded by how much of that window falls *after* the reset — which, hours
+into a season, is almost none of it.
+
+Season 54 made the case precisely. Its first scheduled run began at 10:37 UTC
+on 2026-09-17, 1.6 hours after the 09:00 reset. It fetched 28,478 players and
+inserted 4,082 sets: 48.9 rows per 1000 requests against a floor of 50, so it
+stopped after 25 minutes — with 26,748 tags still on the frontier. The last run
+of season 53 had yielded 2,494. Fifty times the yield, from the clock alone.
+
+Nothing was wrong with that crawl. There was 1.6 hours of ranked play in
+existence to find, and it found it.
+
+So the floor is scaled by the season's age until the battle-log window has had
+time to turn over, and is the configured value from then on. This cannot let a
+dead crawl run away, because the request and time budgets still bound every
+run — the floor only decides whether stopping *early* is warranted, and early
+in a season it never is.
+
+The cost of getting this wrong is not a wasted run; it is a permanent hole.
+Matches that roll out of every player's battle log before a crawl reaches them
+cannot be collected later. Season 53 holds 1,955 sets from its first fourteen
+days and 1.37M from the rest.
+
+That is also why the schedule itself changes shape for a week. Twice-weekly runs
+are right for a warm season, where each crawl has three days of play waiting for
+it; they are wrong for the opening, where the binding constraint is elapsed time
+and a run can only collect what has been played since the last one. So the
+pipeline crawls daily through a season's first seven days and returns to Monday
+and Thursday afterwards.
+
+Cron cannot say "the week after the third Thursday", so the daily entry fires
+every day of the year and a gate job turns it away. The gate is a separate job
+rather than a step, so a day that should not crawl costs forty seconds instead
+of starting a four-hour run and stopping it. Nothing is configured with a date:
+the next reset arms the ramp again on its own.
+
 ## Stopping early only helps if the next run continues
 
 Bounding a run is pointless if the next one starts over. When a run stops, the
