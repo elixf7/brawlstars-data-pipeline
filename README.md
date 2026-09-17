@@ -11,10 +11,24 @@ Over a million ranked sets per season, republished twice a week to
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-**[Live status →](https://elixf7.github.io/brawlstars-data-pipeline/)** ·
-**[Dataset →](https://huggingface.co/datasets/EliF77/brawlstars-ranked)** ·
 **[Brawl Stars Atlas →](https://brawlstars-atlas.pages.dev/)** ·
+**[Dataset →](https://huggingface.co/datasets/EliF77/brawlstars-ranked)** ·
+**[Live status →](https://elixf7.github.io/brawlstars-data-pipeline/)** ·
 **[Model training →](https://github.com/elixf7/brawlstars-draft-agent)**
+
+---
+
+## See what this data becomes
+
+> ### 🗺️ [**Brawl Stars Atlas**](https://brawlstars-atlas.pages.dev/)
+>
+> Every set this pipeline collects ends up here. Atlas is an interactive site
+> built on this dataset: explore how each brawler's strength shifts across maps
+> and skill bands, see which brawlers the model learned to group together, and
+> draft against the win-probability model in your browser.
+>
+> It refreshes weekly from the data published below — no account, no install,
+> nothing to run.
 
 ---
 
@@ -211,28 +225,60 @@ Full setup for the automated version, including credentials, is in
 | [`docs/DOMAIN.md`](docs/DOMAIN.md) | Enough Brawl Stars to read the data |
 | [`docs/SETUP.md`](docs/SETUP.md) | Running the automated pipeline yourself |
 
+## The chain
+
+Three repositories, two cadences, each stage refusing to run on a broken input.
+
+**Most of the month**, the steady schedule:
+
+```
+Mon + Thu 17:17 UTC   this pipeline crawls, gates, publishes to Hugging Face
+Fri       07:00 UTC   draft agent trains the newest season with enough data
+Fri       12:23 UTC   Atlas rebuilds and deploys to Cloudflare
+Sat       05:00 UTC   Hub history squashed to reclaim storage
+```
+
+**A season's first week**, the same three stages every day:
+
+```
+daily 05:17 UTC   train, once the new season can beat the baselines
+daily 13:17 UTC   deploy, once training has switched to it
+daily 17:17 UTC   crawl
+```
+
+The order within a day is the point, not an accident. Atlas validates the
+season's parquet against the model's own counts and refuses to deploy when the
+two disagree — which is correct, and which a crawl landing between them would
+cause. Collection therefore happens last, in the one slot nothing else uses, so
+a model and the site built from it always see the same dataset.
+
+A season resets on the third Thursday and a match is only collectable while it
+sits in some player's last ~25 battles, so the opening days are the ones that
+cannot be caught up on later — season 53 holds 1,955 sets from its first
+fourteen days and 1.37M from the rest. Nine crawls in that week instead of two
+is the difference between a season that is trainable on day four and one that is
+trainable in a fortnight.
+
+Nothing is configured with a date. Every stage computes the third Thursday for
+itself and the daily entries fire year-round, each turned away by a cheap gate
+job until a season is actually new. The next reset arms the ramp again with
+nobody editing anything.
+
+Training publishes only after beating its baselines, and Atlas deploys only
+after confirming training succeeded and that the season's parquet agrees with
+the model's own counts. A season's opening days are too thin to beat those
+baselines, so training falls back to the season before rather than publishing
+something worse, and switches over on its own once the new season is worth it.
+If a stage does fail, the previous site stays online: a stale Atlas is the
+failure mode, never a wrong one.
+
+Saturday's cleanup removes old *revisions*, not current files. Atlas reads the
+latest season parquet rather than a pinned commit, so the squash cannot pull the
+ground out from under it; training's pinned revisions are provenance, not a
+promise that old snapshots stay downloadable.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Not affiliated with or endorsed by Supercell; fan
 content made under Supercell's
 [Fan Content Policy](https://supercell.com/en/fan-content-policy/).
-
-## From collection to the public site
-
-[Brawl Stars Atlas](https://brawlstars-atlas.pages.dev/) presents this dataset's
-ranked statistics and the draft-agent model in an interactive public site.
-
-Collection runs Monday and Thursday at 06:00 UTC. The draft-agent workflow trains
-on the newest published season Friday at 07:00 UTC and publishes only after its
-quality checks pass. Atlas refreshes Friday at 12:23 UTC after checking successful
-training and dashboard publication, then validates the latest season parquet
-against the model's counts before deploying. If new-season data is insufficient
-or a stage fails, the previous site stays online. Schedules can be delayed; Atlas
-can be refreshed manually after a delayed training run succeeds.
-
-The existing Saturday history cleanup remains enabled to limit storage. It
-removes historical revisions but retains current season files. Atlas reads the
-latest season file, not an old commit, and already-deployed site assets are
-self-contained. Historical training revisions are provenance, not a promise that
-old snapshots remain downloadable after cleanup. No separate storage repository
-is required for this weekly publication flow.
