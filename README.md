@@ -13,7 +13,8 @@ Over a million ranked sets per season, republished twice a week to
 
 **[Live status →](https://elixf7.github.io/brawlstars-data-pipeline/)** ·
 **[Dataset →](https://huggingface.co/datasets/EliF77/brawlstars-ranked)** ·
-**[What uses it →](https://github.com/elixf7/brawlstars-draft-agent)**
+**[Brawl Stars Atlas →](https://brawlstars-atlas.pages.dev/)** ·
+**[Model training →](https://github.com/elixf7/brawlstars-draft-agent)**
 
 ---
 
@@ -215,3 +216,23 @@ Full setup for the automated version, including credentials, is in
 MIT — see [LICENSE](LICENSE). Not affiliated with or endorsed by Supercell; fan
 content made under Supercell's
 [Fan Content Policy](https://supercell.com/en/fan-content-policy/).
+
+## From collection to the public site
+
+[Brawl Stars Atlas](https://brawlstars-atlas.pages.dev/) presents this dataset's
+ranked statistics and the draft-agent model in an interactive public site.
+
+Collection runs Monday and Thursday at 06:00 UTC. The draft-agent workflow trains
+on the newest published season Friday at 07:00 UTC and publishes only after its
+quality checks pass. Atlas refreshes Friday at 12:23 UTC after checking successful
+training and dashboard publication, then validates the latest season parquet
+against the model's counts before deploying. If new-season data is insufficient
+or a stage fails, the previous site stays online. Schedules can be delayed; Atlas
+can be refreshed manually after a delayed training run succeeds.
+
+The existing Saturday history cleanup remains enabled to limit storage. It
+removes historical revisions but retains current season files. Atlas reads the
+latest season file, not an old commit, and already-deployed site assets are
+self-contained. Historical training revisions are provenance, not a promise that
+old snapshots remain downloadable after cleanup. No separate storage repository
+is required for this weekly publication flow.
