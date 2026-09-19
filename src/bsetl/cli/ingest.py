@@ -13,6 +13,7 @@ from bsetl.config import get_api_key
 from bsetl.ingest.budget import RunBudget
 from bsetl.ingest.crawler import process_tags_and_write_async
 from bsetl.logconfig import get_logger
+from bsetl.state.seeding import HIGH_ELO_SHARE, adaptive_high_elo_floor
 
 # Explicit: __name__ is "__main__" under `python -m`.
 logger = get_logger("bsetl.cli.ingest")
@@ -80,9 +81,19 @@ def main() -> None:
                         "window has turned over. This is what keeps the top of the "
                         "ladder represented; without it the crawl drifts into the "
                         "bulk of the player base, which is where most players are.")
+    p.add_argument("--high-elo-share", type=float, default=HIGH_ELO_SHARE,
+                   help="Treat --high-elo-floor as a share of the ladder rather than "
+                        "a fixed rating: the floor becomes whatever elo marks out this "
+                        "top fraction of the players already collected. Ranked resets "
+                        "every season and re-spreads over the weeks after, so a fixed "
+                        "rating names a different slice of the population depending on "
+                        "when it is read. 0 disables it and --high-elo-floor is used "
+                        f"as given (default: {HIGH_ELO_SHARE}).")
     p.add_argument("--reservoir-limit", type=int, default=50000,
-                   help="Most known high-elo players to re-queue at the start of a "
-                        "run. A ceiling, so refreshing cannot crowd out new ground.")
+                   help="Most known players to put back on the queue at once, both "
+                        "for the high-elo refresh at the start of a run and for a "
+                        "refill when the frontier empties. A ceiling, so neither can "
+                        "crowd out new ground.")
     p.add_argument("--fetched-tags-ttl-hours", type=float, default=0.0,
                    help="Skip tags fetched within this many hours (0 = disabled)")
     p.add_argument("--flush-every-n-batches", type=int, default=0,
@@ -147,6 +158,25 @@ def main() -> None:
                               "database_rows": rows}, indent=2))
             return
 
+    # The floor that decides who is followed past the depth cap, and who is
+    # re-queued each run, is read off the season's own ladder — see
+    # `adaptive_high_elo_floor`. A season's opening days are the case this
+    # exists for, and they are also the days that cannot be re-crawled later.
+    high_elo_floor = args.high_elo_floor
+    if high_elo_floor is not None and Path(args.clean_db_path).exists():
+        high_elo_floor = adaptive_high_elo_floor(
+            args.clean_db_path,
+            configured=args.high_elo_floor,
+            eligible_from=args.elo_queue_min,
+            share=args.high_elo_share,
+        )
+        if high_elo_floor != args.high_elo_floor:
+            logger.info(
+                "High-elo floor %g configured; using %g, the top %.1f%% of the "
+                "players collected so far",
+                args.high_elo_floor, high_elo_floor, args.high_elo_share * 100,
+            )
+
     budget = RunBudget(
         max_requests=args.max_requests,
         max_seconds=args.max_seconds,
@@ -175,7 +205,7 @@ def main() -> None:
             flush_every_n_batches=args.flush_every_n_batches,
             budget=budget,
             resume=not args.no_resume,
-            high_elo_floor=args.high_elo_floor,
+            high_elo_floor=high_elo_floor,
             reservoir_limit=args.reservoir_limit,
         )
 

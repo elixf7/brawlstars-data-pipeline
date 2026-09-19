@@ -120,9 +120,52 @@ and `--high-elo-floor` adds two things that a pure ordering cannot:
   is: matchmaking pairs like with like, so their logs are dense with the matches
   being looked for, where a tag picked off the frontier at random is not.
 
-The floor is separate from `--elo-queue-min`, which stays low on purpose. Tags
-below the floor are not discarded, they wait, and they are the breadth the crawl
-falls back on when the strong tags run out.
+The floor is separate from `--elo-queue-min`, which is a rule of the game rather
+than a tuning knob: drafting starts at Mythic, so a player below it cannot be in
+a drafted lobby and is never worth following. Tags between that line and the
+floor are not discarded, they wait, and they are the breadth the crawl falls
+back on when the strong tags run out.
+
+### The floor is a share of the ladder, not a rating
+
+A fixed floor cannot do that job across a season boundary. Ranked's reset drops
+everyone about six minor ranks and the ladder re-spreads over the weeks after,
+so the same rating names a different slice of the population depending on when
+it is read — the same fact that `skill_ns` exists to correct in the data, needing
+the same correction in the crawl.
+
+Season 54 is what ignoring it costs. Two days in, a floor of 18 matched 57
+players out of the 146,076 in the database. Six were re-queued, nothing was
+exempt from the depth cap, the frontier drained to zero, and the run stopped at
+105,657 of 280,000 requests while still returning 1.9 sets per request — with
+its yield 32 times its own floor. A season's opening days sit in nobody's last
+25 battles a week later, so those rows are gone rather than delayed.
+
+So `--high-elo-floor` is read off the season's own ladder: the lowest elo whose
+share of the drafting-eligible population is still within `--high-elo-share`.
+Season 53's hand-set 18 was the top 3.30% of the 1.26M players it had seen at
+Mythic or above, and 3.5% is that number rounded out to a rule. It reproduces 18
+on season 53 exactly, and gives 16 on season 54 at two days old — 2,485 players
+rather than 57. The configured value stands when the database cannot answer: an
+empty one on a season's first run, or too few players for a share to mean
+anything.
+
+### An empty queue is not the same as nothing left to crawl
+
+The depth cap can still strand a run, and a frontier that drains to zero leaves
+the *next* run with no seeds either — a season stops collecting without anything
+failing. So when the queue empties with budget remaining, it is refilled from
+the database: every stored set names six players and the elo each was at, so
+what has already been collected can always answer "who is left". Refilled tags
+enter at depth 0, since a player reached that way is a root rather than a
+continuation of the path that first found them, and the same staleness rule
+applies as to the reservoir refresh.
+
+A refill that finds nobody new ends the run, so the backstop cannot turn into a
+reason never to stop, and `frontier_exhausted` goes back to meaning what it
+says. `pipeline_runs.stats_json` records `refilled_tags`: a run that refilled is
+one whose frontier could not sustain it, which is the first thing to look at
+when asking whether the crawl is still finding new ground.
 
 ## A season boundary is a moment, not a day
 

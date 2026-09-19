@@ -69,6 +69,7 @@ class CrawlStats:
     tags_fetched: int = 0
     parse_failures: int = 0
     malformed_records: int = 0
+    refilled_tags: int = 0
     outcomes: dict[str, int] = field(default_factory=dict)
 
     _started: float = field(default_factory=time.monotonic)
@@ -98,6 +99,15 @@ class CrawlStats:
         self.rows_inserted += n
         self._samples.append((self.requests_made, self.rows_inserted))
         self._prune_samples()
+
+    def record_refill(self, n: int) -> None:
+        """Tags put back on an empty queue from the database.
+
+        Worth recording rather than merely logging: a run that refilled is one
+        whose frontier could not sustain it, and the number is the first thing
+        to look at when asking whether the crawl is still finding new ground.
+        """
+        self.refilled_tags += n
 
     def record_parse_failure(self, n: int = 1) -> None:
         self.parse_failures += n
@@ -155,6 +165,7 @@ class CrawlStats:
             "tags_fetched": self.tags_fetched,
             "parse_failures": self.parse_failures,
             "malformed_records": self.malformed_records,
+            "refilled_tags": self.refilled_tags,
             "elapsed_seconds": round(self.elapsed_seconds, 1),
             "recent_yield_per_1k": None if y is None else round(y, 1),
             **{f"http_{k}": v for k, v in sorted(self.outcomes.items())},

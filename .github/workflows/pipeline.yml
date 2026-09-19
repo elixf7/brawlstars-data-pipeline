@@ -176,6 +176,14 @@ jobs:
       # run stopped after 25 minutes at 48.9 against a floor of 50, with 26,748
       # tags still on the frontier -- it was working, there was simply only 1.6
       # hours of ranked play in existence to find.
+      # --high-elo-floor is now a prior rather than a setting: the crawl reads
+      # the floor off the season's own ladder as the top few percent of the
+      # players collected so far, and falls back to this number only when the
+      # database is too new to answer. A season's reset drops everyone about
+      # six minor ranks, so a fixed 18 matched 57 players two days into season
+      # 54 and the frontier died at the depth cap with 62% of the request
+      # budget unspent. --elo-queue-min stays at 13 in every season: drafting
+      # starts at Mythic, so a player below it is never in a drafted lobby.
       # --provision-key signs in to the developer portal, mints a key scoped to
       # this runner's address, and revokes it when the run ends. No long-lived
       # key exists to leak.
