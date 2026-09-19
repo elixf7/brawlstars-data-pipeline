@@ -19,7 +19,7 @@ from bsetl.ingest.ratelimit import AsyncRateLimiter
 from bsetl.logconfig import get_logger, progress_enabled
 from bsetl.state.frontier import load_frontier, save_frontier
 from bsetl.state.runs import finish_run, start_run
-from bsetl.state.seeding import high_elo_tags
+from bsetl.state.seeding import high_elo_tags, refill_tags
 from bsetl.transform.records import record_is_well_formed
 from bsetl.transform.schema import (
     create_fetched_tags_table_if_not_exists,
@@ -747,14 +747,65 @@ async def process_tags_and_write_async(
                     refreshed, high_elo_floor,
                 )
 
+            async def _refill_queue() -> int:
+                """Top the queue up from players the database already names.
+
+                An empty queue is not the same thing as nothing left to crawl.
+                A frontier drains to zero while most of the budget is unspent
+                whenever the pending tags all sit at the depth cap, since
+                fetching them enqueues nothing: season 54's second run stopped
+                that way at 105,657 of 280,000 requests, still returning 1.9
+                sets per request. Every stored set names six players, so the
+                database itself is the answer to "who is left" — refilling from
+                it costs one query and makes `frontier_exhausted` mean what it
+                says rather than "this crawl painted itself into a corner".
+
+                Bounded by the same `reservoir_limit` as the high-elo refresh,
+                and by the budget: a refill that finds nobody new ends the run.
+                """
+                if not clean_db_path or not os.path.exists(clean_db_path):
+                    return 0
+                stale = None
+                if fetched_tags_ttl_hours > 0.0:
+                    from datetime import timedelta
+                    stale = (
+                        datetime.now(UTC) - timedelta(hours=fetched_tags_ttl_hours)
+                    ).isoformat()
+                found = await asyncio.to_thread(
+                    refill_tags,
+                    clean_db_path,
+                    min_elo=-1.0 if elo_queue_min is None else elo_queue_min,
+                    max_elo=elo_queue_max,
+                    limit=reservoir_limit,
+                    stale_before=stale,
+                    exclude=visited_tags | enqueued,
+                )
+                for tag, elo in found:
+                    # Depth 0: a player reached this way is a root, not a
+                    # continuation of the path that first found them.
+                    heapq.heappush(queue, _priority(tag, 0, elo))
+                    enqueued.add(tag)
+                if found:
+                    stats.record_refill(len(found))
+                    logger.info(
+                        "Frontier empty with budget left; refilled %d known player(s) "
+                        "at elo >= %s from the database",
+                        len(found), elo_queue_min,
+                    )
+                return len(found)
+
             heapq.heapify(queue)
 
             pbar_bfs = tqdm(desc="BFS: fetching logs", total=0, dynamic_ncols=True,
                             disable=not progress_enabled())
 
-            while queue:
+            while True:
                 stop_reason = stats.should_stop()
                 if stop_reason is not None:
+                    break
+
+                if not queue and not await _refill_queue():
+                    stop_reason = StopReason.FRONTIER_EXHAUSTED
                     break
 
                 batch = []
@@ -815,8 +866,6 @@ async def process_tags_and_write_async(
                     and _batch_count % flush_every_n_batches == 0
                 ):
                     await _flush_logs()
-            else:
-                stop_reason = StopReason.FRONTIER_EXHAUSTED
 
             pbar_bfs.close()
 
