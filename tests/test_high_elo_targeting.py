@@ -16,7 +16,12 @@ import pytest
 from bsetl.ingest.budget import RunBudget
 from bsetl.publish.state import prune_state, seeds_for_new_season
 from bsetl.state.frontier import create_frontier_table, load_frontier, save_frontier
-from bsetl.state.seeding import high_elo_tags
+from bsetl.state.seeding import (
+    adaptive_high_elo_floor,
+    elo_population,
+    high_elo_tags,
+    refill_tags,
+)
 from bsetl.transform.schema import (
     create_fetched_tags_table_if_not_exists,
     create_matches_table_if_not_exists,
@@ -404,3 +409,168 @@ def test_reconciling_an_empty_database_is_harmless(tmp_path):
     p = str(tmp_path / "empty.db")
     sqlite3.connect(p).close()
     assert drop_foreign_seasons(p, "season54") == 0
+
+
+# ------------------------------------------- reading the floor off the ladder
+def _ladder(path, population):
+    """A database whose players sit at the given elos: {elo: how many}."""
+    conn = sqlite3.connect(path)
+    create_matches_table_if_not_exists(conn)
+    rows, n = [], 0
+    for elo, count in population.items():
+        for _ in range(count):
+            n += 1
+            rows.append(a_row(f"2026090{1 + n % 9}T000000.000Z", f"#P{n}",
+                              [(f"#P{n}", elo)]))
+    conn.executemany(get_matches_insert_statement(), rows)
+    conn.commit()
+    conn.close()
+    return path
+
+
+def test_the_floor_follows_the_ladder_down_after_a_reset(tmp_path):
+    """Ranked's reset drops everyone about six minor ranks, so a floor set
+    against a settled ladder matches almost nobody in a season's opening days.
+    Season 54 is the case: two days in, a floor of 18 named 57 players out of
+    146,076, nothing was exempt from the depth cap, and the crawl stopped with
+    62% of its request budget unspent."""
+    db = _ladder(str(tmp_path / "opening.db"),
+                 {13: 5000, 14: 1500, 15: 500, 16: 200, 17: 30, 18: 5})
+    assert adaptive_high_elo_floor(db, configured=18, eligible_from=13) == 16
+
+
+def test_the_same_share_of_a_settled_ladder_sits_higher(tmp_path):
+    """The rule is the slice, not the rating. Spread the same population out
+    and the floor rises on its own, with nothing reconfigured."""
+    db = _ladder(str(tmp_path / "settled.db"),
+                 {13: 3000, 14: 2000, 15: 1200, 16: 700, 17: 250, 18: 60, 19: 15})
+    assert adaptive_high_elo_floor(db, configured=18, eligible_from=13) == 18
+
+
+def test_the_floor_never_drops_below_the_elo_the_crawl_follows_from(tmp_path):
+    """Drafting starts at Mythic, so a player below it cannot be in a drafted
+    lobby and is never followed. Exempting them from the depth cap would mean
+    nothing, and the share must not be computed over them either."""
+    db = _ladder(str(tmp_path / "flat.db"), {11: 40000, 12: 40000, 13: 6000})
+    assert adaptive_high_elo_floor(db, configured=18, eligible_from=13) == 13
+
+
+def test_a_cold_database_keeps_the_configured_floor(tmp_path):
+    """A season's first run has nothing to read a ladder off. The configured
+    value is the prior, and the seeds came from the previous season anyway."""
+    p = str(tmp_path / "empty.db")
+    sqlite3.connect(p).close()
+    assert adaptive_high_elo_floor(p, configured=18, eligible_from=13) == 18
+
+
+def test_too_few_players_to_measure_keeps_the_configured_floor(tmp_path):
+    """A few hundred players is the seed list, not the ladder."""
+    db = _ladder(str(tmp_path / "thin.db"), {13: 100, 19: 3})
+    assert adaptive_high_elo_floor(db, configured=18, eligible_from=13) == 18
+
+
+def test_the_share_can_be_switched_off(tmp_path):
+    db = _ladder(str(tmp_path / "s.db"), {13: 5000, 14: 1500, 18: 5})
+    assert adaptive_high_elo_floor(db, configured=18, eligible_from=13, share=0) == 18
+
+
+def test_a_player_is_placed_at_their_best_showing(tmp_path):
+    """The same player seen at 13 and at 19 belongs to the top of the ladder,
+    not the middle of it — their ceiling is what makes their log worth having."""
+    db = _ladder(str(tmp_path / "s.db"), {13: 6000})
+    conn = sqlite3.connect(db)
+    conn.executemany(get_matches_insert_statement(),
+                     [a_row("20260905T120000.000Z", "#P1", [("#P1", 19)])])
+    conn.commit()
+    conn.close()
+    assert elo_population(db, min_elo=13)[19] == 1
+    assert 13 not in elo_population(db, min_elo=19)
+
+
+# ------------------------------------- refilling a frontier that ran itself dry
+def test_a_refill_never_reaches_below_the_elo_the_crawl_follows(db):
+    """#LOW is at 12. Drafting starts at Mythic, so their lobbies are not the
+    ones being collected and their log is not worth a request."""
+    assert "#LOW" not in dict(refill_tags(db, min_elo=13, limit=100))
+
+
+def test_a_refill_offers_the_strongest_players_first(db):
+    assert [t for t, _ in refill_tags(db, min_elo=13, limit=100)][:2] == ["#TOP", "#HIGH"]
+
+
+def test_a_refill_skips_what_the_run_already_holds(db):
+    """`exclude` is the run's own queued-and-fetched set. Without it a refill
+    hands back the tags that emptied the queue in the first place."""
+    kept = refill_tags(db, min_elo=13, limit=100, exclude={"#TOP", "#HIGH"})
+    assert dict(kept).keys() == {"#MID", "#ALSOLOW"}
+
+
+def test_a_refill_leaves_a_recently_fetched_player_alone(db):
+    conn = sqlite3.connect(db)
+    create_fetched_tags_table_if_not_exists(conn)
+    upsert_fetched_tags(conn, ["#TOP"], "2026-09-02T00:00:00+00:00")
+    conn.commit()
+    conn.close()
+    got = dict(refill_tags(db, min_elo=13, limit=100,
+                           stale_before="2026-09-01T00:00:00+00:00"))
+    assert "#TOP" not in got and "#HIGH" in got
+
+
+class _Recorder(_Log):
+    """The same battle log for everyone, and a note of who was asked for."""
+
+    asked: list = []
+
+    def get(self, url, headers=None):
+        import urllib.parse
+        tag = urllib.parse.unquote(url.split("/players/")[1].split("/")[0])
+        _Recorder.asked.append(tag)
+        return _Response(200, self.body)
+
+
+async def _crawl_from_nothing(db, monkeypatch, **kw):
+    """A run with no seeds and an empty frontier — the state that stops a
+    crawl dead. Returns (tags asked for, stop reason, tags refilled)."""
+    import datetime as dt
+
+    from bsetl.ingest import crawler
+    from bsetl.state.runs import recent_runs
+
+    _Recorder.asked = []
+    monkeypatch.setattr(crawler.aiohttp, "ClientSession", _Recorder)
+    monkeypatch.setattr(crawler.aiohttp, "TCPConnector", lambda **k: None)
+
+    stats = await crawler.process_tags_and_write_async(
+        player_tags=[],
+        api_key="x",
+        latest_runtime=dt.datetime(2020, 1, 1, tzinfo=dt.UTC),
+        clean_db_path=db,
+        max_depth=0,
+        elo_queue_min=13, elo_queue_max=23,
+        requests_per_second=10_000,
+        budget=RunBudget(max_requests=50),
+        **kw,
+    )
+    return _Recorder.asked, recent_runs(db, limit=1)[0]["stop_reason"], stats.refilled_tags
+
+
+@pytest.mark.asyncio
+async def test_an_empty_frontier_is_refilled_from_the_database(db, monkeypatch):
+    """Season 54's second run drained its frontier to zero at 105,657 of
+    280,000 requests while still returning 1.9 sets each, and the run after it
+    would have started with nothing to crawl at all. Every stored set names six
+    players, so the database can always say who is left."""
+    asked, _, refilled = await _crawl_from_nothing(db, monkeypatch)
+    assert refilled >= 4
+    assert {"#TOP", "#HIGH", "#MID", "#ALSOLOW"} <= set(asked)
+    assert "#LOW" not in asked
+
+
+@pytest.mark.asyncio
+async def test_a_run_ends_when_a_refill_finds_nobody_new(db, monkeypatch):
+    """The backstop must not become a reason to never stop. Once the database
+    holds nobody the run has not already asked about, `frontier_exhausted` is
+    the truth and the run ends on it."""
+    asked, stop_reason, _ = await _crawl_from_nothing(db, monkeypatch)
+    assert stop_reason == "frontier_exhausted"
+    assert len(asked) == len(set(asked)), "no player was asked for twice"

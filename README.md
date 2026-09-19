@@ -81,9 +81,14 @@ back for the next run.
 
 A breadth-first crawl with two separate elo filters: one deciding which matches
 to keep, another deciding which players to follow. They want different values —
-following slightly stronger players yields denser coverage of the band being
-collected, while collapsing them into one range either starves the crawl or
-widens what gets stored.
+drafting starts at Mythic, so a lobby averaging 12.4 is worth storing while the
+elo-12 player in it is not worth following, and collapsing the two into one
+range either starves the crawl or widens what gets stored.
+
+Which players count as the top of the ladder is read off the ladder itself, as a
+share of it, rather than set as a rating. A season's reset drops everyone about
+six minor ranks, and a rating fixed against a settled ladder matches almost
+nobody in the days after one — exactly the days that cannot be crawled later.
 
 Matches are identified by `(battle_time, map, star_player_tag)` under a unique
 index, so re-crawling is a no-op rather than a source of duplicates. That is
@@ -98,7 +103,10 @@ over a trailing window, not rows attempted, because deduplication makes those
 diverge sharply once the database is warm.
 
 Unvisited players are written to a frontier table and reloaded by the next run,
-so a series of short runs behaves as one continuous crawl.
+so a series of short runs behaves as one continuous crawl. If that frontier
+empties while budget remains, it is refilled from the database rather than
+ending the run — every stored set names six players, so what has been collected
+already knows who is left.
 
 ### The skill feature
 
