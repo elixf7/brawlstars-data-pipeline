@@ -46,6 +46,22 @@ skips known players from the very first batch. The table is written incrementall
 during the crawl, not only at the end, so a long run benefits from its own
 progress and an interrupted run keeps what it learned.
 
+Only tags the run actually requested may be stamped. The preloaded tags sit in
+the same visited set as the fetched ones — that is what the set is for — but
+writing the whole set back at the end restarts the TTL on players nobody
+re-read. Runs closer together than the TTL then ratchet: each carries the whole
+recent set another interval forward, and nothing ever ages back into
+eligibility. Season 54 crawled daily against a 24-hour TTL and stopped dead on
+2026-09-20 with an empty frontier and a database naming 179,024 known players,
+177,135 of which had been carried that way since the Friday. Zero requests,
+zero rows, and a green run: the gate passed, because what it checks is the
+data, and the data was simply the previous run's.
+
+Note the shape of the remaining risk, which is scheduling rather than code: a
+TTL equal to the gap between runs makes every run a coin flip on jitter. The
+TTL wants to be comfortably shorter than the shortest interval a run can
+actually fire at.
+
 ## Re-crawling has to be safe
 
 Because coverage is built by repeatedly crawling overlapping neighborhoods, the

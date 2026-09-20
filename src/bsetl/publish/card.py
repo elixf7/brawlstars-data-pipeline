@@ -23,10 +23,36 @@ tags:
   - telemetry
   - brawl-stars
 configs:
-  - config_name: default
-    data_files: "data/**/*.parquet"
----
+{configs}---
 """
+
+
+def _season_sort_key(season: str) -> tuple[int, str]:
+    """Newest first. `season54` sorts above `season9`, which a string will not."""
+    digits = "".join(c for c in season if c.isdigit())
+    return (-int(digits) if digits else 0, season)
+
+
+def render_configs(seasons: list[str], current: str) -> str:
+    """One Hub config per season, with the season in progress marked default.
+
+    A single config globbing `data/**` pools every season into one split, which
+    is what the viewer and a bare `load_dataset` then show. That is the one
+    thing this dataset's own Limitations section says not to do: balance
+    changes move the meta, so seasons are distinct regimes and the pooled mean
+    describes no version of the game. Naming them separately makes the current
+    season what a visitor lands on, and the older ones a deliberate choice.
+    """
+    ordered = sorted({*seasons, current}, key=_season_sort_key)
+    lines = []
+    for season in ordered:
+        lines.append(f"  - config_name: {season}\n")
+        lines.append(f'    data_files: "data/season={season}/*.parquet"\n')
+        if season == current:
+            # Exactly one config may claim this, and it decides what the viewer
+            # opens on and what `load_dataset` returns with no config named.
+            lines.append("    default: true\n")
+    return "".join(lines)
 
 
 def _size_category(rows: int) -> str:
@@ -49,13 +75,22 @@ def render_dataset_card(
     *,
     export: dict[str, Any] | None = None,
     repo_id: str | None = None,
+    seasons: list[str] | None = None,
     source_repo: str = "https://github.com/elixf7/brawlstars-data-pipeline",
 ) -> str:
+    """The card for the season being published.
+
+    `seasons` is every season the repo holds, including this one; it decides
+    the config list in the frontmatter. Omitting it names only this season,
+    which is right for a first publish and wrong once there is an archive, so
+    callers that can ask the Hub should.
+    """
     rows = int(meta.get("num_matches") or 0)
     modes = meta.get("modes") or []
     maps = meta.get("maps") or []
     season = meta.get("season_label") or "unknown"
     export = export or {}
+    archive = [s for s in sorted(set(seasons or []), key=_season_sort_key) if s != season]
 
     top = meta.get("brawler_usage_top") or []
     top_rows = "\n".join(
@@ -66,6 +101,7 @@ def render_dataset_card(
         _FRONTMATTER.format(
             pretty_name=f"Brawl Stars Ranked Matches ({season})",
             size_category=_size_category(rows),
+            configs=render_configs(seasons or [], season),
         ),
         f"""
 # Brawl Stars Ranked Matches — {season}
@@ -96,13 +132,31 @@ Collected and published automatically by [an open-source ETL pipeline]({source_r
             f"({export.get('compression_ratio', 0):.1f}x smaller than the source database) |\n"
         )
 
+    rid = repo_id or "your-name/brawlstars-ranked"
+    other = archive[0] if archive else "season53"
+    archive_line = (
+        "Earlier seasons: " + ", ".join(f"`{s}`" for s in archive) + "."
+        if archive else "It is the only season published so far."
+    )
     parts.append(f"""
+## Seasons
+
+This page shows **{season}**, the season in progress. It is refreshed every
+time the crawler runs, so the numbers above move during the season.
+
+Each season is its own config, because they are not interchangeable — see
+[Limitations](#limitations). {archive_line}
+
 ## Loading
 
 ```python
 from datasets import load_dataset
 
-ds = load_dataset("{repo_id or 'your-name/brawlstars-ranked'}", split="train")
+# {season}, the current season — the default when no config is named.
+ds = load_dataset("{rid}", split="train")
+
+# An earlier season, by name.
+old = load_dataset("{rid}", "{other}", split="train")
 ```
 
 Each season is one file, written in time order. Parquet stores the min and max
@@ -167,8 +221,10 @@ comparable across the season.
 - **Not a uniform sample.** Rows are gathered by crawling the player graph
   breadth-first from seed players, filtered to a target elo band. Popular and
   higher-rated players are over-represented relative to the whole population.
-- **One season per dataset.** Balance changes shift the meta between seasons, so
-  pooling them mixes distinct regimes.
+- **One season at a time.** Balance changes shift the meta between seasons, so
+  pooling them mixes distinct regimes. Each season is a separate config for
+  that reason; loading two and concatenating them is a decision to make
+  deliberately, not a default.
 - **Elo is per-brawler**, not per-player: a strong player on an unfamiliar
   brawler carries a low rating into the match.
 

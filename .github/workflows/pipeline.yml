@@ -235,8 +235,13 @@ jobs:
         id: gate
         run: uv run bsetl-check --clean-db-path "$DB_PATH" --season "$SEASON"
 
+      # HF_TOKEN so the card can ask the repo which other seasons it holds: the
+      # card names one config per season and marks the current one default, and
+      # the runner only has this season's export to go on.
       - name: Export
         if: success()
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           uv run bsetl-export \
             --clean-db-path "$DB_PATH" \
