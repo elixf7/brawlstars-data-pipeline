@@ -151,12 +151,21 @@ within time windows.
 ```python
 from datasets import load_dataset
 
+# The season in progress, which is what the dataset page opens on.
 ds = load_dataset("EliF77/brawlstars-ranked", split="train")
+
+# An earlier season, by name.
+old = load_dataset("EliF77/brawlstars-ranked", "season53", split="train")
 ```
 
 One row per **set** — up to three games on a fixed map, first to two wins.
 One file per season, written in time order; Parquet records the time range of
 each row group, so a reader asking for a single week still skips the rest.
+
+Each season is a separate config, and the current one is the default. Seasons
+are not interchangeable — a balance patch moves the meta, and ranked resets the
+ladder — so pooling them is a decision to make deliberately rather than the
+thing that happens to whoever clicks the link.
 
 | Column | Meaning |
 | --- | --- |

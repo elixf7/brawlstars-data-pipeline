@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -574,3 +575,57 @@ async def test_a_run_ends_when_a_refill_finds_nobody_new(db, monkeypatch):
     asked, stop_reason, _ = await _crawl_from_nothing(db, monkeypatch)
     assert stop_reason == "frontier_exhausted"
     assert len(asked) == len(set(asked)), "no player was asked for twice"
+
+
+def _stamps(db):
+    conn = sqlite3.connect(db)
+    try:
+        return dict(conn.execute("SELECT tag, fetched_utc FROM fetched_tags"))
+    finally:
+        conn.close()
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_player_keeps_the_timestamp_they_already_had(db, monkeypatch):
+    """The TTL says who is too freshly fetched to be worth a request. A run
+    that skips somebody on those grounds must not then restamp them with its
+    own clock: that restarts their TTL without anybody having re-read them.
+
+    With runs closer together than the TTL it ratchets — every run carries the
+    whole recent set another day forward, so nobody ever ages back into
+    eligibility. Season 54's run on 2026-09-20 made zero requests against a
+    frontier of nothing and a database of 179,024 known players, because
+    177,135 of them had been carried like that since the Friday.
+    """
+    conn = sqlite3.connect(db)
+    create_fetched_tags_table_if_not_exists(conn)
+    # Just inside a 24h TTL, so the run must skip them.
+    fresh = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    upsert_fetched_tags(conn, ["#TOP", "#HIGH"], fresh)
+    conn.commit()
+    conn.close()
+
+    asked, _, _ = await _crawl_from_nothing(db, monkeypatch, fetched_tags_ttl_hours=24.0)
+
+    assert {"#TOP", "#HIGH"}.isdisjoint(asked), "a fresh player was re-fetched"
+    after = _stamps(db)
+    assert after["#TOP"] == fresh and after["#HIGH"] == fresh
+    # The ones it did ask for are stamped, so their own TTL starts now.
+    assert set(asked) <= set(after)
+
+
+@pytest.mark.asyncio
+async def test_the_ttl_lets_go_once_the_window_has_turned_over(db, monkeypatch):
+    """The other half of the same rule: past the TTL a player is crawlable
+    again, and a run with an empty frontier will find them."""
+    conn = sqlite3.connect(db)
+    create_fetched_tags_table_if_not_exists(conn)
+    stale = (datetime.now(UTC) - timedelta(hours=30)).isoformat()
+    upsert_fetched_tags(conn, ["#TOP", "#HIGH"], stale)
+    conn.commit()
+    conn.close()
+
+    asked, _, _ = await _crawl_from_nothing(db, monkeypatch, fetched_tags_ttl_hours=24.0)
+
+    assert {"#TOP", "#HIGH"} <= set(asked)
+    assert _stamps(db)["#TOP"] > stale

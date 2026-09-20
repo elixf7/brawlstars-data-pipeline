@@ -39,6 +39,33 @@ def _delete_patterns(season: str | None) -> list[str] | None:
     return [f"data/season={season}/**", *LEGACY_PREFIXES]
 
 
+def remote_seasons(repo_id: str, *, token: str | None = None) -> list[str]:
+    """Seasons already published to `repo_id`, from its file list.
+
+    The card names one config per season, so it has to know what is there —
+    and only the Hub knows, since the runner holds a single season's export.
+
+    Answers `[]` rather than raising on any failure: not being able to list a
+    repo is not a reason to fail a publish, and the caller falls back to naming
+    the season it is publishing. Missing an archived season from the config
+    list is cosmetic and self-corrects on the next run; refusing to publish a
+    crawl over it would not be.
+    """
+    try:
+        from huggingface_hub import HfApi
+
+        files = HfApi(token=token).list_repo_files(repo_id=repo_id, repo_type="dataset")
+    except Exception as e:  # network, auth, no such repo, huggingface-hub absent
+        logger.warning("Could not list %s to find other seasons: %s", repo_id, e)
+        return []
+    found = set()
+    for f in files:
+        # data/season=season54/data.parquet
+        if f.startswith("data/season=") and f.endswith(".parquet"):
+            found.add(f.split("data/season=", 1)[1].split("/", 1)[0])
+    return sorted(found)
+
+
 def push_season(
     local_dir: str,
     repo_id: str,

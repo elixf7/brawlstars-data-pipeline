@@ -178,12 +178,79 @@ def test_card_survives_empty_metadata():
     assert "unknown" in card
 
 
+def test_the_current_season_is_what_a_visitor_lands_on():
+    """One config per season, and the season in progress is the default. A
+    single config globbing `data/**` pools every season into one split, which
+    is the thing the card's own Limitations section says not to do."""
+    card = render_dataset_card(
+        {"season_label": "season54", "num_matches": 424_459},
+        repo_id="me/bs", seasons=["season53", "season54"],
+    )
+    front = card.split("---")[1]
+    assert front.index("config_name: season54") < front.index("config_name: season53")
+    assert "default: true" in front
+    assert front.count("default: true") == 1, "only one config may be the default"
+    assert 'data_files: "data/season=season54/*.parquet"' in front
+    assert "data/**" not in front
+
+
+def test_seasons_are_ordered_by_number_not_by_string():
+    """`season9` is older than `season54`, and sorting the labels says it is
+    newer. The default config is the only one that has to be right, but the
+    list reads as a history."""
+    card = render_dataset_card(
+        {"season_label": "season54"}, seasons=["season9", "season54", "season10"],
+    )
+    front = card.split("---")[1]
+    order = [front.index(f"config_name: season{n}") for n in (54, 10, 9)]
+    assert order == sorted(order)
+
+
+def test_a_first_publish_names_only_its_own_season():
+    """Nothing to ask the Hub about yet, and no archive to advertise."""
+    card = render_dataset_card({"season_label": "season54"})
+    front = card.split("---")[1]
+    assert front.count("config_name:") == 1
+    assert "config_name: season54" in front
+    assert "only season published" in card
+
+
 def test_card_states_the_sampling_caveat():
     """The crawl over-samples popular players; a card that hid that would be
     misleading to anyone training on it."""
     card = render_dataset_card({"num_matches": 10})
     assert "Not a uniform sample" in card
     assert "No draft order" in card
+
+
+# ------------------------------------------------------ what the repo holds
+def test_remote_seasons_reads_the_partition_names(monkeypatch):
+    import bsetl.publish.hub as hub
+
+    class _Api:
+        def __init__(self, token=None):
+            pass
+
+        def list_repo_files(self, repo_id, repo_type):
+            return ["README.md", "metadata.json",
+                    "data/season=season53/data.parquet",
+                    "data/season=season54/data.parquet",
+                    "state/season54.db"]
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    assert hub.remote_seasons("me/bs") == ["season53", "season54"]
+
+
+def test_a_repo_that_cannot_be_listed_is_not_a_failed_publish(monkeypatch):
+    """Losing a config for one run is cosmetic and self-corrects. Refusing to
+    publish a crawl over it would not."""
+    import bsetl.publish.hub as hub
+
+    def _boom(token=None):
+        raise OSError("no network")
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _boom)
+    assert hub.remote_seasons("me/bs") == []
 
 
 # ------------------------------------------------------------------ publish

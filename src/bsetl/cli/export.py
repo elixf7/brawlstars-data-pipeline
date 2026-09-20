@@ -31,6 +31,10 @@ def main() -> None:
     p.add_argument("--skip-checks", action="store_true",
                    help="Export even if the quality gate fails. The gate exists so "
                         "a bad crawl is not published; skip it deliberately.")
+    p.add_argument("--no-remote-seasons", action="store_true",
+                   help="Do not ask the Hub which other seasons the repo holds. "
+                        "The card then names only this one, and an archived "
+                        "season loses its config until the next publish.")
     p.add_argument("--with-sqlite", action="store_true",
                    help="Also emit a SQLite copy with pipeline state stripped, for "
                         "consumers that expect it")
@@ -78,8 +82,19 @@ def main() -> None:
             indent=2, ensure_ascii=False,
         )
     )
+    # The card lists one Hub config per season and marks this one default, so
+    # a visitor lands on the season in progress rather than every season pooled
+    # into one split. Which seasons exist is a fact about the repo, not about
+    # this export, so it is asked for rather than assumed.
+    seasons = [season]
+    if args.repo_id and not args.no_remote_seasons:
+        from bsetl.publish.hub import remote_seasons
+
+        seasons = sorted({season, *remote_seasons(args.repo_id)})
     (out / "README.md").write_text(
-        render_dataset_card(meta, export=export_info, repo_id=args.repo_id)
+        render_dataset_card(
+            meta, export=export_info, repo_id=args.repo_id, seasons=seasons
+        )
     )
 
     if args.with_sqlite:

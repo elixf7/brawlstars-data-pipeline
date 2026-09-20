@@ -625,7 +625,13 @@ async def process_tags_and_write_async(
 
     logs_dict: dict = {}
     discovered_tags_set: set = set()
+    # Tags this run must not ask for: the ones it has already fetched, plus the
+    # ones a recent enough earlier run fetched.
     visited_tags: set = set()
+    # Tags this run actually asked the API for. A strict subset of the above,
+    # and the only thing that may be written back to `fetched_tags` — see the
+    # stamping block near the end of this function.
+    fetched_this_run: set = set()
     _batch_count = 0
 
     # Skip tags fetched recently enough that their 25-battle window has not
@@ -817,6 +823,7 @@ async def process_tags_and_write_async(
                 for (tag, depth, elo) in batch:
                     if tag not in visited_tags:
                         visited_tags.add(tag)
+                        fetched_this_run.add(tag)
                         tasks.append((tag, depth, elo))
                 if not tasks:
                     continue
@@ -832,6 +839,7 @@ async def process_tags_and_write_async(
                         # retry failed. Either way the tag is unanswered, so it
                         # returns to the frontier instead of counting as empty.
                         visited_tags.discard(tag)
+                        fetched_this_run.discard(tag)
                         requeue.append((tag, depth, elo))
                         continue
                     if battle_log:
@@ -883,13 +891,22 @@ async def process_tags_and_write_async(
                 pbar_info.update(len(to_fetch))
                 pbar_info.close()
 
-        if fetched_tags_ttl_hours > 0.0 and clean_db_path and visited_tags:
+        # Only what this run actually asked the API for. `visited_tags` also
+        # holds every tag preloaded above because an *earlier* run fetched it
+        # recently, and re-stamping those with `now` restarts their TTL without
+        # anyone having re-read them. With runs less than the TTL apart that
+        # ratchets forever: each run pushes the whole recent set another day
+        # into the future, so nothing ever ages back into eligibility and the
+        # crawl wakes up to an empty frontier and an empty refill. Season 54's
+        # run on 2026-09-20 made zero requests for exactly this reason --
+        # 177,135 of its 179,024 known tags had been carried forward that way.
+        if fetched_tags_ttl_hours > 0.0 and clean_db_path and fetched_this_run:
             _now = datetime.now(UTC).isoformat()
             os.makedirs(os.path.dirname(os.path.abspath(clean_db_path)), exist_ok=True)
             _c = sqlite3.connect(clean_db_path)
             try:
                 create_fetched_tags_table_if_not_exists(_c)
-                upsert_fetched_tags(_c, list(visited_tags), _now)
+                upsert_fetched_tags(_c, list(fetched_this_run), _now)
             finally:
                 _c.close()
 
